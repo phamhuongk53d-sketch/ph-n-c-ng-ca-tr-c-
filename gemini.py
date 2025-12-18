@@ -1,114 +1,126 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
+from streamlit_gsheets import GSheetsConnection
 import io
 
-# Cấu hình trang
-st.set_page_config(page_title="Phần mềm Phân ca Trực", layout="wide")
+st.set_page_config(page_title="Hệ thống Trực Công Bằng 2025", layout="wide")
 
-st.title("📅 Hệ thống Phân công Ca trực Tự động")
-st.markdown("---")
+# --- HÀM HỖ TRỢ ĐỊNH DẠNG ---
+def get_vietnamese_weekday(date_obj):
+    weekdays = ["T2", "T3", "T4", "T5", "T6", "T7", "CN"]
+    return f"{weekdays[date_obj.weekday()]}- {date_obj.strftime('%d/%m')}"
 
-# --- PHẦN 1: NHẬP DỮ LIỆU ---
-with st.sidebar:
-    st.header("Cấu hình nhân sự")
-    staff_input = st.text_area("Danh sách nhân viên (cách nhau bằng dấu phẩy)", 
-                               "Trung, Ngà, Liên, Linh, Hà, Bình, Huyền, Thảo, Trang, Hương B")
-    staff = [s.strip() for s in staff_input.split(",")]
-    
-    special_staff = st.multiselect("Nhân viên CHỈ trực ca ngày (8h-16h)", staff, default=["Trung", "Ngà"])
-    
-    st.header("Thời gian & Giới hạn")
-    month = st.number_input("Tháng", min_value=1, max_value=12, value=datetime.now().month)
-    year = st.number_input("Năm", min_value=2024, max_value=2030, value=datetime.now().year)
-    max_hours = st.number_input("Số giờ tối đa/người", value=176)
+# --- KẾT NỐI GOOGLE SHEETS ---
+url = st.sidebar.text_input("Dán link Google Sheet:", "LINK_CUA_BAN")
 
-    st.header("Bù giờ tháng trước")
-    carried_over = {}
-    for s in staff:
-        carried_over[s] = st.number_input(f"Giờ đã làm tháng trước của {s}", value=0)
+if url:
+    conn = st.connection("gsheets", type=GSheetsConnection)
 
-# --- PHẦN 2: QUẢN LÝ NGƯỜI BẬN ---
-st.subheader("📍 Đăng ký ngày bận (Nghỉ)")
-if 'busy_dates' not in st.session_state:
-    st.session_state.busy_dates = {}
+    # 1. ĐỌC DỮ LIỆU THÔ (Dùng sheet riêng để tính toán)
+    # Lưu ý: Nên dùng sheet "Data_Log" để lưu dữ liệu thô phục vụ tính toán lũy kế
+    try:
+        df_raw = conn.read(spreadsheet=url, worksheet="Data_Log")
+        df_raw['Ngày'] = pd.to_datetime(df_raw['Ngày']).dt.date
+    except:
+        df_raw = pd.DataFrame(columns=['Ngày', 'Ca', 'Nhân viên', 'Giờ'])
 
-col1, col2, col3 = st.columns([2, 3, 1])
-with col1:
-    date_b = st.date_input("Chọn ngày nhân viên bận")
-with col2:
-    people_b = st.multiselect("Chọn những người bận vào ngày này", staff)
-with col3:
-    if st.button("Thêm vào danh sách bận"):
-        st.session_state.busy_dates[str(date_b)] = people_b
-        st.success(f"Đã lưu ngày {date_b}")
-
-if st.session_state.busy_dates:
-    with st.expander("Xem danh sách bận hiện tại"):
-        st.write(st.session_state.busy_dates)
-        if st.button("Xóa tất cả danh sách bận"):
-            st.session_state.busy_dates = {}
-            st.rerun()
-
-# --- PHẦN 3: THUẬT TOÁN PHÂN CA ---
-def generate_schedule():
-    days_in_month = pd.Period(f"{year}-{month}").days_in_month
-    schedule_data = []
-    work_hours = {s: carried_over.get(s, 0) for s in staff}
-    available_at = {s: datetime(year, month, 1, 0, 0) for s in staff}
-    normal_staff = [s for s in staff if s not in special_staff]
-
-    for day in range(1, days_in_month + 1):
-        curr_date = datetime(year, month, day)
-        curr_date_str = str(curr_date.date())
-        busy_today = st.session_state.busy_dates.get(curr_date_str, [])
-
-        # Ca Ngày
-        shift_day_start = curr_date.replace(hour=8)
-        pot_day = [s for s in staff if available_at[s] <= shift_day_start and s not in busy_today and work_hours[s] + 8 <= max_hours]
-        pot_day.sort(key=lambda s: (0 if s in special_staff else 1, work_hours[s]))
+    # --- SIDEBAR CẤU HÌNH ---
+    with st.sidebar:
+        st.header("Cấu hình nhân sự")
+        staff_input = st.text_area("Danh sách nhân viên hiện tại", "Trung, Ngà, Liên, Linh, Hà, Bình, Huyền, Thảo, Trang, Hương B")
+        staff = [s.strip() for s in staff_input.split(",")]
+        special_staff = st.multiselect("Chỉ trực ca ngày", staff, default=["Trung", "Ngà"])
         
-        assigned_day = pot_day[:2]
-        for s in assigned_day:
-            schedule_data.append({"Ngày": curr_date_str, "Ca": "Ngày (8-16h)", "Nhân viên": s, "Giờ": 8})
-            work_hours[s] += 8
-            available_at[s] = curr_date.replace(hour=16) + timedelta(hours=16)
-
-        # Ca Đêm
-        shift_night_start = curr_date.replace(hour=16)
-        pot_night = [s for s in normal_staff if available_at[s] <= shift_night_start and s not in busy_today and work_hours[s] + 16 <= max_hours]
-        pot_night.sort(key=lambda s: work_hours[s])
+        st.header("Thời gian phân lịch")
+        start_date = st.date_input("Phân lịch từ ngày:", datetime.now().date())
+        end_date = st.date_input("Đến hết ngày:", (datetime.now() + timedelta(days=30)).date())
         
-        assigned_night = pot_night[:2]
-        for s in assigned_night:
-            schedule_data.append({"Ngày": curr_date_str, "Ca": "Đêm (16-8h)", "Nhân viên": s, "Giờ": 16})
-            work_hours[s] += 16
-            available_at[s] = curr_date.replace(hour=8) + timedelta(days=1, hours=24)
+    # --- TÍNH TỔNG GIỜ LŨY KẾ ---
+    history_before = df_raw[df_raw['Ngày'] < start_date]
+    luy_ke_hours = {s: history_before[history_before['Nhân viên'] == s]['Giờ'].sum() for s in staff}
 
-    return pd.DataFrame(schedule_data), pd.DataFrame(list(work_hours.items()), columns=['Nhân viên', 'Tổng giờ'])
+    st.subheader(f"📊 Tổng giờ lũy kế tính đến trước ngày {start_date}")
+    st.write(pd.DataFrame([luy_ke_hours]))
 
-# --- PHẦN 4: HIỂN THỊ KẾT QUẢ & XUẤT EXCEL ---
-if st.button("🚀 CHẠY PHÂN CA TRỰC"):
-    df_main, df_summary = generate_schedule()
-    
-    col_res1, col_res2 = st.columns([3, 1])
-    with col_res1:
-        st.subheader("Bảng phân ca chi tiết")
-        st.dataframe(df_main, use_container_width=True)
-    
-    with col_res2:
-        st.subheader("Tổng hợp giờ làm")
-        st.dataframe(df_summary, use_container_width=True)
+    # --- ĐĂNG KÝ NGÀY BẬN ---
+    if 'busy_dates' not in st.session_state: st.session_state.busy_dates = {}
+    with st.expander("📍 Đăng ký nhân viên nghỉ/bận"):
+        c1, c2 = st.columns(2)
+        d_b = c1.date_input("Chọn ngày")
+        p_b = c2.multiselect("Người nghỉ", staff)
+        if st.button("Xác nhận nghỉ"):
+            st.session_state.busy_dates[str(d_b)] = p_b
 
-    # Xuất file Excel vào bộ nhớ để tải về
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df_main.to_excel(writer, sheet_name='Lich_Chi_Tiet', index=False)
-        df_summary.to_excel(writer, sheet_name='Tong_Hop_Gio', index=False)
-    
-    st.download_button(
-        label="📥 Tải về file Excel",
-        data=output.getvalue(),
-        file_name=f"Lich_Truc_{month}_{year}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    # --- THUẬT TOÁN PHÂN LỊCH ---
+    def generate_dynamic_schedule():
+        new_raw_entries = []
+        current_work_hours = luy_ke_hours.copy()
+        available_at = {s: datetime.combine(start_date - timedelta(days=1), datetime.min.time()) for s in staff}
+        
+        current_day = start_date
+        while current_day <= end_date:
+            curr_datetime = datetime.combine(current_day, datetime.min.time())
+            busy_today = st.session_state.busy_dates.get(str(current_day), [])
+
+            # --- CA NGÀY (8h-16h) ---
+            shift_start = curr_datetime.replace(hour=8)
+            pot_day = [s for s in staff if available_at[s] <= shift_start and s not in busy_today]
+            pot_day.sort(key=lambda s: (0 if s in special_staff else 1, current_work_hours[s]))
+            
+            for s in pot_day[:2]:
+                new_raw_entries.append({"Ngày": current_day, "Ca": "Ca: 8h00' – 16h00'", "Nhân viên": s, "Giờ": 8})
+                current_work_hours[s] += 8
+                available_at[s] = curr_datetime.replace(hour=16) + timedelta(hours=16)
+
+            # --- CA ĐÊM (16h-8h) ---
+            shift_start_n = curr_datetime.replace(hour=16)
+            pot_night = [s for s in staff if s not in special_staff and available_at[s] <= shift_start_n and s not in busy_today]
+            pot_night.sort(key=lambda s: current_work_hours[s])
+            
+            for s in pot_night[:2]:
+                new_raw_entries.append({"Ngày": current_day, "Ca": "Ca: 16h00' – 8h00'", "Nhân viên": s, "Giờ": 16})
+                current_work_hours[s] += 16
+                available_at[s] = curr_datetime.replace(hour=8) + timedelta(days=1, hours=24)
+            
+            current_day += timedelta(days=1)
+        
+        return pd.DataFrame(new_raw_entries)
+
+    # --- XỬ LÝ KẾT QUẢ ---
+    if st.button("🚀 TẠO LỊCH MỚI & CẬP NHẬT"):
+        df_new_raw = generate_dynamic_schedule()
+        
+        # 1. Cập nhật Data_Log (Dữ liệu thô để tính toán lần sau)
+        df_final_raw = pd.concat([history_before, df_new_raw], ignore_index=True)
+        
+        # 2. Tạo sheet "Lich_Truc" hiển thị theo yêu cầu (Group & Pivot)
+        # Bước A: Định dạng ngày có Thứ
+        df_display = df_final_raw.copy()
+        df_display['Ngày'] = df_display['Ngày'].apply(get_vietnamese_weekday)
+        
+        # Bước B: Group nhân viên trong cùng 1 ca
+        df_pivot = df_display.groupby(['Ngày', 'Ca'])['Nhân viên'].apply(lambda x: ' '.join(x)).reset_index()
+        
+        # Bước C: Xoay bảng (Pivot) để Ca thành cột
+        df_pivot = df_pivot.pivot(index='Ngày', columns='Ca', values='Nhân viên').reset_index()
+        
+        # Đảm bảo thứ tự cột đúng như ảnh
+        cols = ['Ngày', "Ca: 8h00' – 16h00'", "Ca: 16h00' – 8h00'"]
+        df_pivot = df_pivot.reindex(columns=cols).fillna("")
+
+        st.subheader("🗓️ Lịch trực hiển thị (Theo mẫu ảnh)")
+        st.table(df_pivot) # Dùng table để nhìn giống mẫu ảnh hơn
+
+        # 3. Ghi lên Google Sheets
+        try:
+            # Lưu dữ liệu thô vào sheet Data_Log để máy tính hiểu
+            conn.update(spreadsheet=url, worksheet="Data_Log", data=df_final_raw)
+            # Lưu dữ liệu hiển thị vào sheet Lich_Truc để con người xem
+            conn.update(spreadsheet=url, worksheet="Lich_Truc", data=df_pivot)
+            st.success("✅ Đã cập nhật lịch trực và dữ liệu lũy kế thành công!")
+        except Exception as e:
+            st.error(f"Lỗi lưu dữ liệu: {e}")
+
+else:
+    st.warning("Vui lòng nhập link Google Sheet để bắt đầu.")
