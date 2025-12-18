@@ -7,8 +7,7 @@ st.set_page_config(page_title="Hệ thống Trực Công Bằng 2025", layout="w
 
 # --- CẤU HÌNH CỐ ĐỊNH ---
 # Thay ID_FILE_CỦA_BẠN bằng chuỗi ký tự nằm giữa /d/ và /edit trên link trình duyệt của bạn
-SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1IQg-gXpWWL14FjpiPNAaNAOpsRlXv6BWnm9_GOSLOEE/edit?gid=726349550#gid=726349550"
-
+SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1IQg-gXpWWL14FjpiPNAaNAOpsRlXv6BWnm9_GOSLOEE/edit?usp=sharing"
 # --- KẾT NỐI GOOGLE SHEETS ---
 # Tự động sử dụng cấu hình Service Account trong .streamlit/secrets.toml hoặc Streamlit Cloud Secrets
 conn = st.connection("gsheets", type=GSheetsConnection)
