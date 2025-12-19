@@ -139,18 +139,18 @@ def generate_schedule():
     return pd.DataFrame(rows)
 
 # ==================================================
-# TẠO LỊCH
+# XỬ LÝ CHÍNH KHI BẤM NÚT
 # ==================================================
 if st.button("🚀 TẠO LỊCH & CẬP NHẬT"):
     df_new = generate_schedule()
     df_new = ensure_df(df_new)
     df_new = force_date(df_new)
 
+    # Hợp nhất lịch cũ và lịch mới
     df_total = pd.concat([old_part, df_new], ignore_index=True)
 
-    # ================= LỊCH TRỰC =================
+    # ================= LỊCH TRỰC VIEW =================
     df_view = group_shift(df_total)
-
     export = []
     for (y, m), g in df_view.groupby([df_view["Ngày"].dt.year, df_view["Ngày"].dt.month]):
         export.append({"Ngày": f"LỊCH THÁNG {m}/{y}", "Ca": "", "Nhân viên": "", "Giờ": ""})
@@ -161,18 +161,17 @@ if st.button("🚀 TẠO LỊCH & CẬP NHẬT"):
                 "Nhân viên": r["Nhân viên"],
                 "Giờ": r["Giờ"]
             })
-
     df_export = pd.DataFrame(export)
 
-    # ==================================================
-    # TÍNH GIỜ – 2 BẢNG (THEO NGHIỆP VỤ CHỐT)
-    # ==================================================
-    start_month = today.replace(day=1)
-    start_year = today.replace(month=1, day=1)
+    # ================= TÍNH GIỜ (DÙNG DF_TOTAL ĐỂ CẬP NHẬT MỚI NHẤT) =================
+    start_month = pd.to_datetime(today.replace(day=1))
+    start_year = pd.to_datetime(today.replace(month=1, day=1))
+    today_dt = pd.to_datetime(today)
+    change_date_dt = pd.to_datetime(change_date)
 
-    # ---- BẢNG A: ĐẾN HÔM NAY ----
-    df_m_today = df_raw[(df_raw["Ngày"].dt.date >= start_month) & (df_raw["Ngày"].dt.date <= today)]
-    df_y_today = df_raw[(df_raw["Ngày"].dt.date >= start_year) & (df_raw["Ngày"].dt.date <= today)]
+    # Bảng 1: Đến hôm nay
+    df_m_today = df_total[(df_total["Ngày"] >= start_month) & (df_total["Ngày"] <= today_dt)]
+    df_y_today = df_total[(df_total["Ngày"] >= start_year) & (df_total["Ngày"] <= today_dt)]
 
     df_hours_today = pd.DataFrame({"Nhân viên": staff})
     df_hours_today["Giờ tháng (đến hôm nay)"] = df_hours_today["Nhân viên"].map(
@@ -182,9 +181,9 @@ if st.button("🚀 TẠO LỊCH & CẬP NHẬT"):
         df_y_today.groupby("Nhân viên")["Giờ"].sum()
     ).fillna(0)
 
-    # ---- BẢNG B: ĐẾN THỜI ĐIỂM PHÂN CA ----
-    df_m_plan = df_raw[(df_raw["Ngày"].dt.date >= start_month) & (df_raw["Ngày"].dt.date <= change_date)]
-    df_y_plan = df_raw[(df_raw["Ngày"].dt.date >= start_year) & (df_raw["Ngày"].dt.date <= change_date)]
+    # Bảng 2: Đến ngày phân ca
+    df_m_plan = df_total[(df_total["Ngày"] >= start_month) & (df_total["Ngày"] <= change_date_dt)]
+    df_y_plan = df_total[(df_total["Ngày"] >= start_year) & (df_total["Ngày"] <= change_date_dt)]
 
     df_hours_plan = pd.DataFrame({"Nhân viên": staff})
     df_hours_plan["Giờ tháng (đến ngày phân ca)"] = df_hours_plan["Nhân viên"].map(
@@ -198,26 +197,31 @@ if st.button("🚀 TẠO LỊCH & CẬP NHẬT"):
     st.subheader("📅 Lịch trực")
     st.dataframe(df_export, use_container_width=True)
 
-    st.subheader("⏱️ Tổng giờ làm việc – ĐẾN HIỆN TẠI")
-    st.dataframe(df_hours_today, use_container_width=True)
-
-    st.subheader("📌 Tổng giờ làm việc – ĐẾN THỜI ĐIỂM PHÂN CA")
-    st.dataframe(df_hours_plan, use_container_width=True)
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("⏱️ Tổng giờ làm việc – ĐẾN HIỆN TẠI")
+        st.dataframe(df_hours_today, use_container_width=True)
+    with col2:
+        st.subheader("📌 Tổng giờ làm việc – ĐẾN THỜI ĐIỂM PHÂN CA")
+        st.dataframe(df_hours_plan, use_container_width=True)
 
     # ================= GHI GOOGLE SHEET =================
     df_save = df_total.copy()
     df_save["Ngày"] = df_save["Ngày"].dt.strftime("%d/%m/%Y")
 
-    conn.update(
-        spreadsheet=SPREADSHEET_URL,
-        worksheet=SHEET_DATA,
-        data=df_save.reset_index(drop=True)
-    )
+    conn.update(spreadsheet=SPREADSHEET_URL, worksheet=SHEET_DATA, data=df_save.reset_index(drop=True))
+    conn.update(spreadsheet=SPREADSHEET_URL, worksheet=SHEET_VIEW, data=df_export.reset_index(drop=True))
 
-    conn.update(
-        spreadsheet=SPREADSHEET_URL,
-        worksheet=SHEET_VIEW,
-        data=df_export.reset_index(drop=True)
-    )
+    st.success("✅ Đã cập nhật lịch thành công!")
 
-    st.success("✅ Đã cập nhật lịch – FILE FINAL ĐÃ KHÓA NGHIỆP VỤ")
+else:
+    # HIỂN THỊ DỮ LIỆU CŨ KHI CHƯA BẤM NÚT
+    st.info("Nhấn nút '🚀 TẠO LỊCH & CẬP NHẬT' để tính toán lịch mới.")
+    if not df_raw.empty:
+        st.subheader("⏱️ Tổng giờ làm việc hiện tại (từ database)")
+        # Logic tính giờ nhanh từ df_raw có sẵn
+        start_month = pd.to_datetime(today.replace(day=1))
+        df_m = df_raw[df_raw["Ngày"] >= start_month]
+        df_summary = pd.DataFrame({"Nhân viên": staff})
+        df_summary["Giờ tháng hiện tại"] = df_summary["Nhân viên"].map(df_m.groupby("Nhân viên")["Giờ"].sum()).fillna(0)
+        st.dataframe(df_summary, use_container_width=True)
