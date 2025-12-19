@@ -4,22 +4,21 @@ from datetime import datetime, timedelta
 from streamlit_gsheets import GSheetsConnection
 
 # ==================================================
-# CẤU HÌNH
+# CẤU HÌNH ỨNG DỤNG
 # ==================================================
 st.set_page_config(
-    page_title="Hệ thống phân công trực – Final Locked",
+    page_title="Hệ thống phân công trực – Bản chuẩn vận hành",
     layout="wide"
 )
 
 SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1IQg-gXpWWL14FjpiPNAaNAOpsRlXv6BWnm9_GOSLOEE/edit?usp=sharing"
 SHEET_DATA = "Data_Log"
-SHEET_VIEW = "Lich_Truc"
 
 REQUIRED_COLS = ["Ngày", "Ca", "Nhân viên", "Giờ"]
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 # ==================================================
-# HÀM TIỆN ÍCH (SAFE)
+# HÀM TIỆN ÍCH (SAFE – KHÓA LỖI)
 # ==================================================
 def vn_day(d: pd.Timestamp) -> str:
     return ["T2","T3","T4","T5","T6","T7","CN"][d.weekday()] + " " + d.strftime("%d/%m/%Y")
@@ -38,7 +37,7 @@ def force_datetime(df: pd.DataFrame, col="Ngày") -> pd.DataFrame:
     return df.dropna(subset=[col])
 
 # ==================================================
-# ĐỌC DỮ LIỆU CŨ (SAFE)
+# ĐỌC DỮ LIỆU TỪ GOOGLE SHEETS (CHỈ PHỤC VỤ TÍNH)
 # ==================================================
 try:
     df_raw = conn.read(
@@ -71,18 +70,18 @@ with st.sidebar:
         default=["Trung", "Ngà"]
     )
 
-    st.header("Khoảng thời gian tạo lịch")
+    st.header("Khoảng tạo lịch")
     start_date = st.date_input("Từ ngày", datetime.now().date())
     end_date = st.date_input("Đến ngày", start_date + timedelta(days=365))
 
-    st.header("Thay đổi nhân sự theo ngày")
+    st.header("Thay đổi nhân sự")
     change_date = st.date_input(
         "Ngày bắt đầu áp dụng thay đổi",
         start_date
     )
 
     absent_staff = st.multiselect(
-        "Nhân sự nghỉ / bận từ ngày này",
+        "Nhân sự nghỉ/bận từ ngày này",
         staff,
         default=[]
     )
@@ -93,7 +92,7 @@ with st.sidebar:
 old_part = df_raw[df_raw["Ngày"].dt.date < change_date]
 
 # ==================================================
-# GIỜ LŨY KẾ TRƯỚC NGÀY THAY ĐỔI
+# GIỜ LŨY KẾ ĐẾN TRƯỚC NGÀY THAY ĐỔI
 # ==================================================
 luy_ke = {}
 for s in staff:
@@ -151,9 +150,9 @@ def generate_schedule_from_change():
     return pd.DataFrame(rows)
 
 # ==================================================
-# TẠO & CẬP NHẬT
+# TẠO & HIỂN THỊ
 # ==================================================
-if st.button("🚀 TẠO LẠI LỊCH TỪ NGÀY THAY ĐỔI"):
+if st.button("🚀 TẠO / CẬP NHẬT LỊCH"):
     df_new = generate_schedule_from_change()
 
     if df_new.empty:
@@ -163,52 +162,81 @@ if st.button("🚀 TẠO LẠI LỊCH TỪ NGÀY THAY ĐỔI"):
     df_new = ensure_dataframe(df_new)
     df_new = force_datetime(df_new, "Ngày")
 
-    # GỘP CŨ + MỚI
+    # GỘP LỊCH
     df_total = pd.concat([old_part, df_new], ignore_index=True)
-
-    # ===== ÉP KIỂU NGÀY LẦN CUỐI (KHÓA LỖI .dt) =====
     df_total = ensure_dataframe(df_total)
     df_total = force_datetime(df_total, "Ngày")
 
-    # ===== CHIA THEO THÁNG =====
-    df_total["Năm"] = df_total["Ngày"].dt.year
-    df_total["Tháng"] = df_total["Ngày"].dt.month
+    # ==================================================
+    # 1️⃣ HIỂN THỊ LỊCH TRỰC DẠNG GỘP NGƯỜI / CA
+    # ==================================================
+    df_view = df_total.copy()
+    df_view["Ngày_hiển_thị"] = df_view["Ngày"].apply(vn_day)
 
-    export_rows = []
-    for (y, m), g in df_total.groupby(["Năm", "Tháng"]):
-        export_rows.append({
-            "Ngày": f"LỊCH PHÂN CÔNG THÁNG {m} NĂM {y}",
-            "Ca": "",
-            "Nhân viên": "",
-            "Giờ": ""
-        })
-        for _, r in g.sort_values("Ngày").iterrows():
-            export_rows.append({
-                "Ngày": vn_day(r["Ngày"]),
-                "Ca": r["Ca"],
-                "Nhân viên": r["Nhân viên"],
-                "Giờ": r["Giờ"]
-            })
-
-    df_export = pd.DataFrame(export_rows)
-
-    st.subheader("Lịch trực sau khi điều chỉnh")
-    st.dataframe(df_export, use_container_width=True)
-
-    # ===== GHI GOOGLE SHEETS =====
-    df_save = df_total.copy()
-    df_save["Ngày"] = df_save["Ngày"].dt.strftime("%d/%m/%Y")
-
-    conn.update(
-        spreadsheet=SPREADSHEET_URL,
-        worksheet=SHEET_DATA,
-        data=df_save.reset_index(drop=True)
+    df_group = (
+        df_view
+        .groupby(["Ngày_hiển_thị", "Ca"], as_index=False)["Nhân viên"]
+        .apply(lambda x: ", ".join(sorted(x)))
     )
 
-    conn.update(
-        spreadsheet=SPREADSHEET_URL,
-        worksheet=SHEET_VIEW,
-        data=df_export.reset_index(drop=True)
+    df_pivot = (
+        df_group
+        .pivot(index="Ngày_hiển_thị", columns="Ca", values="Nhân viên")
+        .fillna("")
+        .reset_index()
     )
 
-    st.success("✅ Đã cập nhật lịch – bản cuối đã chốt hoàn toàn")
+    st.subheader("📅 Lịch trực tổng hợp")
+    st.dataframe(df_pivot, use_container_width=True)
+
+    # ==================================================
+    # 2️⃣ TỔNG GIỜ TRỰC THEO THÁNG (01 → HIỆN TẠI)
+    # ==================================================
+    today = datetime.now().date()
+    month_start = today.replace(day=1)
+
+    df_month = df_total[
+        (df_total["Ngày"].dt.date >= month_start) &
+        (df_total["Ngày"].dt.date <= today)
+    ]
+
+    df_month_sum = (
+        df_month
+        .groupby("Nhân viên", as_index=False)["Giờ"]
+        .sum()
+        .sort_values("Giờ", ascending=False)
+    )
+
+    st.subheader(f"⏱️ Tổng giờ trực tháng {today.month}/{today.year}")
+    st.dataframe(df_month_sum, use_container_width=True)
+
+    # ==================================================
+    # 3️⃣ TỔNG GIỜ TRỰC THEO NĂM (RESET MỖI NĂM)
+    # ==================================================
+    year_selected = st.number_input(
+        "Chọn năm xem tổng giờ",
+        min_value=2020,
+        max_value=2100,
+        value=today.year,
+        step=1
+    )
+
+    year_start = datetime(year_selected, 1, 1).date()
+    year_end = datetime(year_selected, 12, 31).date()
+
+    df_year = df_total[
+        (df_total["Ngày"].dt.date >= year_start) &
+        (df_total["Ngày"].dt.date <= year_end)
+    ]
+
+    df_year_sum = (
+        df_year
+        .groupby("Nhân viên", as_index=False)["Giờ"]
+        .sum()
+        .sort_values("Giờ", ascending=False)
+    )
+
+    st.subheader(f"📊 Tổng giờ trực năm {year_selected}")
+    st.dataframe(df_year_sum, use_container_width=True)
+
+    st.success("✅ Đã tạo và hiển thị lịch trực đúng yêu cầu")
