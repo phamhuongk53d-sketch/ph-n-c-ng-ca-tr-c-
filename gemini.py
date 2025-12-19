@@ -126,9 +126,9 @@ def generate_schedule():
 # ==================================================
 # 6. HIỂN THỊ GIAO DIỆN CHÍNH
 # ==================================================
-st.title("🚀 Hệ thống Quản lý Lịch trực")
+st.title(" Hệ thống Quản lý Lịch trực")
 
-if st.button("🚀 TẠO / CẬP NHẬT LỊCH"):
+if st.button(" TẠO / CẬP NHẬT LỊCH"):
     df_all = generate_schedule()
     
     # Hiển thị bảng lịch trực
@@ -204,3 +204,4 @@ if st.button("🔢 TỔNG SỐ GIỜ TRỰC"):
         )
         
         st.success("✅ Đã trích xuất dữ liệu tổng hợp thành công!")
+
