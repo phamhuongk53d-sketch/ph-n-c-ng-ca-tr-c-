@@ -4,14 +4,14 @@ from datetime import datetime, timedelta
 from streamlit_gsheets import GSheetsConnection
 
 # ==================================================
-# CẤU HÌNH
+# CẤU HÌNH CHUNG
 # ==================================================
 st.set_page_config(
-    page_title="Hệ thống phân công trực – Final Locked",
+    page_title="Hệ thống phân công trực ca – FINAL",
     layout="wide"
 )
 
-SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1IQg-gXpWWL14FjpiPNAaNAOpsRlXv6BWnm9_GOSLOEE/edit?usp=sharing"
+SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1IQg-gXpWWL14FjpiPNAaNAOpsRlXv6BWnm9_GOSLOEE/edit"
 SHEET_DATA = "Data_Log"
 SHEET_VIEW = "Lich_Truc"
 
@@ -19,42 +19,37 @@ REQUIRED_COLS = ["Ngày", "Ca", "Nhân viên", "Giờ"]
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 # ==================================================
-# HÀM TIỆN ÍCH (SAFE)
+# HÀM TIỆN ÍCH
 # ==================================================
-def vn_day(d: pd.Timestamp) -> str:
-    return ["T2","T3","T4","T5","T6","T7","CN"][d.weekday()] + " " + d.strftime("%d/%m/%Y")
+def vn_day(d):
+    return ["T2","T3","T4","T5","T6","T7","CN"][d.weekday()] + " - " + d.strftime("%d/%m/%Y")
 
-def ensure_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+def ensure_df(df):
     if df is None or df.empty:
         return pd.DataFrame(columns=REQUIRED_COLS)
-    df.columns = [str(c).strip() for c in df.columns]
     for c in REQUIRED_COLS:
         if c not in df.columns:
             df[c] = None
     return df[REQUIRED_COLS]
 
-def force_datetime(df: pd.DataFrame, col="Ngày") -> pd.DataFrame:
-    df[col] = pd.to_datetime(df[col], dayfirst=True, errors="coerce")
-    return df.dropna(subset=[col])
+def parse_date(df):
+    df["Ngày"] = pd.to_datetime(df["Ngày"], dayfirst=True, errors="coerce")
+    return df.dropna(subset=["Ngày"])
 
 # ==================================================
-# ĐỌC DỮ LIỆU CŨ (SAFE)
+# ĐỌC DỮ LIỆU CŨ
 # ==================================================
 try:
-    df_raw = conn.read(
-        spreadsheet=SPREADSHEET_URL,
-        worksheet=SHEET_DATA,
-        ttl=0
-    )
-except Exception:
-    df_raw = pd.DataFrame()
+    df_old = conn.read(spreadsheet=SPREADSHEET_URL, worksheet=SHEET_DATA, ttl=0)
+except:
+    df_old = pd.DataFrame()
 
-df_raw = ensure_dataframe(df_raw)
-df_raw = force_datetime(df_raw, "Ngày")
-df_raw["Giờ"] = pd.to_numeric(df_raw["Giờ"], errors="coerce").fillna(0)
+df_old = ensure_df(df_old)
+df_old = parse_date(df_old)
+df_old["Giờ"] = pd.to_numeric(df_old["Giờ"], errors="coerce").fillna(0)
 
 # ==================================================
-# SIDEBAR – CẤU HÌNH
+# SIDEBAR
 # ==================================================
 with st.sidebar:
     st.header("Nhân sự")
@@ -65,84 +60,79 @@ with st.sidebar:
     )
     staff = [s.strip() for s in staff_input.split(",") if s.strip()]
 
-    special_staff = st.multiselect(
-        "Chỉ trực ca ngày",
-        staff,
-        default=["Trung", "Ngà"]
-    )
+    special_staff = ["Trung", "Ngà"]
 
-    st.header("Khoảng thời gian tạo lịch")
+    st.header("Khoảng tạo lịch")
     start_date = st.date_input("Từ ngày", datetime.now().date())
-    end_date = st.date_input("Đến ngày", start_date + timedelta(days=365))
-
-    st.header("Thay đổi nhân sự theo ngày")
-    change_date = st.date_input(
-        "Ngày bắt đầu áp dụng thay đổi",
-        start_date
-    )
-
-    absent_staff = st.multiselect(
-        "Nhân sự nghỉ / bận từ ngày này",
-        staff,
-        default=[]
-    )
+    end_date = st.date_input("Đến ngày", start_date + timedelta(days=30))
 
 # ==================================================
-# GIỮ LỊCH CŨ TRƯỚC NGÀY THAY ĐỔI
+# KHÓA TẠO LỊCH TRƯỚC NGÀY HIỆN TẠI
 # ==================================================
-old_part = df_raw[df_raw["Ngày"].dt.date < change_date]
+today = datetime.now().date()
+if start_date < today:
+    st.error("❌ Không cho phép tạo hoặc chỉnh sửa lịch trước ngày hiện tại.")
+    st.stop()
 
 # ==================================================
-# GIỜ LŨY KẾ TRƯỚC NGÀY THAY ĐỔI
+# GIỮ LỊCH CŨ
 # ==================================================
-luy_ke = {}
+df_fixed = df_old[df_old["Ngày"].dt.date < start_date]
+
+# ==================================================
+# GIỜ LŨY KẾ
+# ==================================================
+hours = {s: 0 for s in staff}
 for s in staff:
-    mask = old_part["Nhân viên"].astype(str).str.strip() == s
-    luy_ke[s] = old_part.loc[mask, "Giờ"].sum()
+    hours[s] = df_fixed[df_fixed["Nhân viên"] == s]["Giờ"].sum()
 
 # ==================================================
-# THUẬT TOÁN PHÂN CA TỪ NGÀY THAY ĐỔI
+# THUẬT TOÁN PHÂN CA
 # ==================================================
-def generate_schedule_from_change():
+def generate_schedule():
     rows = []
-    active_staff = [s for s in staff if s not in absent_staff]
-    hours = luy_ke.copy()
+    available_at = {s: datetime.min for s in staff}
 
-    available_at = {
-        s: datetime.combine(change_date - timedelta(days=1), datetime.min.time())
-        for s in active_staff
-    }
-
-    curr = change_date
+    curr = start_date
     while curr <= end_date:
         base = datetime.combine(curr, datetime.min.time())
+        is_weekday = curr.weekday() < 5
 
         # ===== CA NGÀY =====
-        day_candidates = [
-            s for s in active_staff
-            if available_at[s] <= base.replace(hour=8)
-        ]
-        day_candidates.sort(
-            key=lambda s: (
-                0 if s in special_staff else 1,
-                hours.get(s, 0)
-            )
-        )
+        day_candidates = []
+        for s in staff:
+            if available_at[s] <= base.replace(hour=8):
+                if s in special_staff:
+                    if is_weekday:
+                        day_candidates.append(s)
+                else:
+                    day_candidates.append(s)
 
+        day_candidates.sort(key=lambda s: hours[s])
         for s in day_candidates[:2]:
-            rows.append({"Ngày": curr, "Ca": "Ca ngày (08–16)", "Nhân viên": s, "Giờ": 8})
+            rows.append({
+                "Ngày": curr,
+                "Ca": "Ca ngày (08–16)",
+                "Nhân viên": s,
+                "Giờ": 8
+            })
             hours[s] += 8
             available_at[s] = base.replace(hour=16) + timedelta(hours=16)
 
         # ===== CA ĐÊM =====
         night_candidates = [
-            s for s in active_staff
+            s for s in staff
             if s not in special_staff and available_at[s] <= base.replace(hour=16)
         ]
-        night_candidates.sort(key=lambda s: hours.get(s, 0))
+        night_candidates.sort(key=lambda s: hours[s])
 
         for s in night_candidates[:2]:
-            rows.append({"Ngày": curr, "Ca": "Ca đêm (16–08)", "Nhân viên": s, "Giờ": 16})
+            rows.append({
+                "Ngày": curr,
+                "Ca": "Ca đêm (16–08)",
+                "Nhân viên": s,
+                "Giờ": 16
+            })
             hours[s] += 16
             available_at[s] = base + timedelta(days=2)
 
@@ -151,64 +141,32 @@ def generate_schedule_from_change():
     return pd.DataFrame(rows)
 
 # ==================================================
-# TẠO & CẬP NHẬT
+# TẠO LỊCH
 # ==================================================
-if st.button("🚀 TẠO LẠI LỊCH TỪ NGÀY THAY ĐỔI"):
-    df_new = generate_schedule_from_change()
+if st.button("🚀 TẠO LỊCH"):
+    df_new = generate_schedule()
+    df_all = pd.concat([df_fixed, df_new], ignore_index=True)
+    df_all = parse_date(df_all)
 
-    if df_new.empty:
-        st.warning("Không có dữ liệu để tạo lịch")
-        st.stop()
-
-    df_new = ensure_dataframe(df_new)
-    df_new = force_datetime(df_new, "Ngày")
-
-    # GỘP CŨ + MỚI
-    df_total = pd.concat([old_part, df_new], ignore_index=True)
-
-    # ===== ÉP KIỂU NGÀY LẦN CUỐI (KHÓA LỖI .dt) =====
-    df_total = ensure_dataframe(df_total)
-    df_total = force_datetime(df_total, "Ngày")
-
-    # ===== CHIA THEO THÁNG =====
-    df_total["Năm"] = df_total["Ngày"].dt.year
-    df_total["Tháng"] = df_total["Ngày"].dt.month
-
-    export_rows = []
-    for (y, m), g in df_total.groupby(["Năm", "Tháng"]):
-        export_rows.append({
-            "Ngày": f"LỊCH PHÂN CÔNG THÁNG {m} NĂM {y}",
-            "Ca": "",
-            "Nhân viên": "",
-            "Giờ": ""
+    # ===== HIỂN THỊ GIỐNG BIỂU MẪU GIẤY =====
+    display = []
+    for d, g in df_all.groupby("Ngày"):
+        display.append({
+            "Ngày": vn_day(d),
+            "Ca: 8h00 – 16h00": ", ".join(g[g["Ca"].str.contains("ngày")]["Nhân viên"]),
+            "Ca: 16h00 – 8h00": ", ".join(g[g["Ca"].str.contains("đêm")]["Nhân viên"])
         })
-        for _, r in g.sort_values("Ngày").iterrows():
-            export_rows.append({
-                "Ngày": vn_day(r["Ngày"]),
-                "Ca": r["Ca"],
-                "Nhân viên": r["Nhân viên"],
-                "Giờ": r["Giờ"]
-            })
 
-    df_export = pd.DataFrame(export_rows)
+    df_display = pd.DataFrame(display).sort_values("Ngày")
 
-    st.subheader("Lịch trực sau khi điều chỉnh")
-    st.dataframe(df_export, use_container_width=True)
+    st.subheader("📋 LỊCH TRỰC CA")
+    st.dataframe(df_display, use_container_width=True)
 
     # ===== GHI GOOGLE SHEETS =====
-    df_save = df_total.copy()
+    df_save = df_all.copy()
     df_save["Ngày"] = df_save["Ngày"].dt.strftime("%d/%m/%Y")
 
-    conn.update(
-        spreadsheet=SPREADSHEET_URL,
-        worksheet=SHEET_DATA,
-        data=df_save.reset_index(drop=True)
-    )
+    conn.update(spreadsheet=SPREADSHEET_URL, worksheet=SHEET_DATA, data=df_save)
+    conn.update(spreadsheet=SPREADSHEET_URL, worksheet=SHEET_VIEW, data=df_display)
 
-    conn.update(
-        spreadsheet=SPREADSHEET_URL,
-        worksheet=SHEET_VIEW,
-        data=df_export.reset_index(drop=True)
-    )
-
-    st.success("✅ Đã cập nhật lịch – bản cuối đã chốt hoàn toàn")
+    st.success("✅ Đã tạo và chốt lịch thành công – bản FINAL")
