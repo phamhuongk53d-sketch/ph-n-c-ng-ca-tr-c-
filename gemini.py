@@ -4,10 +4,10 @@ from datetime import datetime, timedelta
 from streamlit_gsheets import GSheetsConnection
 
 # ==================================================
-# CẤU HÌNH CHUNG
+# CẤU HÌNH
 # ==================================================
 st.set_page_config(
-    page_title="Hệ thống phân công trực ca – FINAL",
+    page_title="Hệ thống phân công trực ca – FINAL FIX",
     layout="wide"
 )
 
@@ -21,7 +21,7 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 # ==================================================
 # HÀM TIỆN ÍCH
 # ==================================================
-def vn_day(d):
+def vn_day(d: datetime) -> str:
     return ["T2","T3","T4","T5","T6","T7","CN"][d.weekday()] + " - " + d.strftime("%d/%m/%Y")
 
 def ensure_df(df):
@@ -67,16 +67,13 @@ with st.sidebar:
     end_date = st.date_input("Đến ngày", start_date + timedelta(days=30))
 
 # ==================================================
-# KHÓA TẠO LỊCH TRƯỚC NGÀY HIỆN TẠI
+# KHÓA LỊCH CŨ
 # ==================================================
 today = datetime.now().date()
 if start_date < today:
     st.error("❌ Không cho phép tạo hoặc chỉnh sửa lịch trước ngày hiện tại.")
     st.stop()
 
-# ==================================================
-# GIỮ LỊCH CŨ
-# ==================================================
 df_fixed = df_old[df_old["Ngày"].dt.date < start_date]
 
 # ==================================================
@@ -92,8 +89,8 @@ for s in staff:
 def generate_schedule():
     rows = []
     available_at = {s: datetime.min for s in staff}
-
     curr = start_date
+
     while curr <= end_date:
         base = datetime.combine(curr, datetime.min.time())
         is_weekday = curr.weekday() < 5
@@ -110,12 +107,7 @@ def generate_schedule():
 
         day_candidates.sort(key=lambda s: hours[s])
         for s in day_candidates[:2]:
-            rows.append({
-                "Ngày": curr,
-                "Ca": "Ca ngày (08–16)",
-                "Nhân viên": s,
-                "Giờ": 8
-            })
+            rows.append({"Ngày": curr, "Ca": "Ca ngày", "Nhân viên": s, "Giờ": 8})
             hours[s] += 8
             available_at[s] = base.replace(hour=16) + timedelta(hours=16)
 
@@ -127,12 +119,7 @@ def generate_schedule():
         night_candidates.sort(key=lambda s: hours[s])
 
         for s in night_candidates[:2]:
-            rows.append({
-                "Ngày": curr,
-                "Ca": "Ca đêm (16–08)",
-                "Nhân viên": s,
-                "Giờ": 16
-            })
+            rows.append({"Ngày": curr, "Ca": "Ca đêm", "Nhân viên": s, "Giờ": 16})
             hours[s] += 16
             available_at[s] = base + timedelta(days=2)
 
@@ -148,25 +135,28 @@ if st.button("🚀 TẠO LỊCH"):
     df_all = pd.concat([df_fixed, df_new], ignore_index=True)
     df_all = parse_date(df_all)
 
-    # ===== HIỂN THỊ GIỐNG BIỂU MẪU GIẤY =====
-    display = []
-    for d, g in df_all.groupby("Ngày"):
-        display.append({
+    # 🔒 SORT ĐÚNG THEO DATETIME
+    df_all = df_all.sort_values("Ngày")
+
+    # ===== HIỂN THỊ DẠNG BIỂU MẪU GIẤY =====
+    display_rows = []
+    for d, g in df_all.groupby("Ngày", sort=False):
+        display_rows.append({
             "Ngày": vn_day(d),
-            "Ca: 8h00 – 16h00": ", ".join(g[g["Ca"].str.contains("ngày")]["Nhân viên"]),
-            "Ca: 16h00 – 8h00": ", ".join(g[g["Ca"].str.contains("đêm")]["Nhân viên"])
+            "Ca: 8h00 – 16h00": ", ".join(g[g["Ca"] == "Ca ngày"]["Nhân viên"]),
+            "Ca: 16h00 – 8h00": ", ".join(g[g["Ca"] == "Ca đêm"]["Nhân viên"])
         })
 
-    df_display = pd.DataFrame(display).sort_values("Ngày")
+    df_display = pd.DataFrame(display_rows)
 
     st.subheader("📋 LỊCH TRỰC CA")
     st.dataframe(df_display, use_container_width=True)
 
-    # ===== GHI GOOGLE SHEETS =====
+    # ===== LƯU GOOGLE SHEETS =====
     df_save = df_all.copy()
     df_save["Ngày"] = df_save["Ngày"].dt.strftime("%d/%m/%Y")
 
     conn.update(spreadsheet=SPREADSHEET_URL, worksheet=SHEET_DATA, data=df_save)
     conn.update(spreadsheet=SPREADSHEET_URL, worksheet=SHEET_VIEW, data=df_display)
 
-    st.success("✅ Đã tạo và chốt lịch thành công – bản FINAL")
+    st.success("✅ Lịch đã được sắp xếp ĐÚNG thứ tự ngày – bản FINAL FIX")
