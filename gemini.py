@@ -57,7 +57,7 @@ try:
         worksheet=SHEET_DATA,
         ttl=0
     )
-except:
+except Exception:
     df_raw = pd.DataFrame()
 
 df_raw = ensure_df(df_raw)
@@ -151,7 +151,7 @@ if st.button("🚀 TẠO LẠI LỊCH"):
 
     df_total = pd.concat([old_part, df_new], ignore_index=True)
 
-    # ================= LỊCH TRỰC (HIỂN THỊ TOÀN BỘ) =================
+    # ================= LỊCH TRỰC (TOÀN BỘ) =================
     df_view = group_shift(df_total)
 
     export = []
@@ -196,11 +196,20 @@ if st.button("🚀 TẠO LẠI LỊCH"):
     st.subheader("⏱️ Tổng giờ làm việc")
     st.dataframe(df_hours, use_container_width=True)
 
-    # ================= GHI SHEET =================
+    # ================= GHI GOOGLE SHEET (ĐÃ FIX LỖI) =================
     df_save = df_total.copy()
     df_save["Ngày"] = df_save["Ngày"].dt.strftime("%d/%m/%Y")
 
-    conn.update(SPREADSHEET_URL, SHEET_DATA, df_save.reset_index(drop=True))
-    conn.update(SPREADSHEET_URL, SHEET_VIEW, df_export.reset_index(drop=True))
+    conn.update(
+        spreadsheet=SPREADSHEET_URL,
+        worksheet=SHEET_DATA,
+        data=df_save.reset_index(drop=True)
+    )
 
-    st.success("✅ Đã tạo lịch và tính giờ CHUẨN – ĐẦY ĐỦ")
+    conn.update(
+        spreadsheet=SPREADSHEET_URL,
+        worksheet=SHEET_VIEW,
+        data=df_export.reset_index(drop=True)
+    )
+
+    st.success("✅ Đã tạo lịch & cập nhật Google Sheet – FILE FINAL OK")
