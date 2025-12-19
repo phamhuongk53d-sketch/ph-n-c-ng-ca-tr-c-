@@ -50,19 +50,35 @@ def group_view(df):
 
 def calculate_summary(df_source, staff_list, end_date_limit, label_m, label_y):
     """Hàm tính toán tổng giờ làm việc chính xác"""
+    if df_source.empty:
+        summary = pd.DataFrame({"Nhân viên": staff_list})
+        summary[label_m] = 0
+        summary[label_y] = 0
+        return summary
+    
     # Chuẩn hóa mốc thời gian để so sánh
-    today_ts = pd.Timestamp(datetime.now().date())
     ref_date = pd.Timestamp(end_date_limit)
+    
+    # Tính tháng và năm từ ref_date
     start_month = ref_date.replace(day=1)
     start_year = ref_date.replace(month=1, day=1)
-
+    
     # Lọc dữ liệu trong khoảng
     df_m = df_source[(df_source["Ngày"] >= start_month) & (df_source["Ngày"] <= ref_date)]
     df_y = df_source[(df_source["Ngày"] >= start_year) & (df_source["Ngày"] <= ref_date)]
-
+    
     summary = pd.DataFrame({"Nhân viên": staff_list})
-    summary[label_m] = summary["Nhân viên"].map(df_m.groupby("Nhân viên")["Giờ"].sum()).fillna(0)
-    summary[label_y] = summary["Nhân viên"].map(df_y.groupby("Nhân viên")["Giờ"].sum()).fillna(0)
+    
+    # Tính tổng giờ
+    month_hours = df_m.groupby("Nhân viên")["Giờ"].sum()
+    year_hours = df_y.groupby("Nhân viên")["Giờ"].sum()
+    
+    summary[label_m] = summary["Nhân viên"].map(month_hours).fillna(0)
+    summary[label_y] = summary["Nhân viên"].map(year_hours).fillna(0)
+    
+    # Sắp xếp theo thứ tự staff_list
+    summary = summary.set_index("Nhân viên").reindex(staff_list).reset_index()
+    
     return summary
 
 # ==================================================
@@ -83,7 +99,7 @@ with st.sidebar:
     st.header("⚙️ Cài đặt")
     staff_input = st.text_area(
         "Danh sách nhân viên",
-        "Trung, Ngà, Liên, Linh, Hà, Bình, Huyền, Thảo, Trang, HươngB"
+        "Trung, Ngà, Liên, Linh, Hà, Bình, Huyền, Thảo, Trang, Hương"
     )
     staff = [s.strip() for s in staff_input.split(",") if s.strip()]
 
@@ -100,7 +116,8 @@ with st.sidebar:
 def generate_schedule(start_d, end_d, staff_list, special_list, absent_list):
     rows = []
     active = [s for s in staff_list if s not in absent_list]
-    # Trạng thái sẵn sàng của nhân viên (tính từ ngày hôm trước của ngày bắt đầu)
+    
+    # Khởi tạo trạng thái sẵn sàng
     available = {s: datetime.combine(start_d - timedelta(days=1), datetime.min.time()) for s in active}
 
     curr_d = start_d
@@ -114,7 +131,7 @@ def generate_schedule(start_d, end_d, staff_list, special_list, absent_list):
         
         for s in day_cand[:2]:
             rows.append({"Ngày": curr_d, "Ca": "Ca ngày (08–16)", "Nhân viên": s, "Giờ": 8})
-            available[s] = base.replace(hour=16) + timedelta(hours=16) # Nghỉ ít nhất 16h
+            available[s] = base.replace(hour=16) + timedelta(hours=16)  # Nghỉ ít nhất 16h
 
         # 2. PHÂN CA ĐÊM (16-08h)
         night_cand = [s for s in active if s not in special_list and available[s] <= base.replace(hour=16)]
@@ -123,7 +140,7 @@ def generate_schedule(start_d, end_d, staff_list, special_list, absent_list):
         
         for s in night_cand[:2]:
             rows.append({"Ngày": curr_d, "Ca": "Ca đêm (16–08)", "Nhân viên": s, "Giờ": 16})
-            available[s] = base + timedelta(days=2) # Nghỉ 1 ngày sau ca đêm
+            available[s] = base + timedelta(days=2)  # Nghỉ 1 ngày sau ca đêm
 
         curr_d += timedelta(days=1)
     return pd.DataFrame(rows)
@@ -146,7 +163,7 @@ if st.button("🚀 TẠO LỊCH & CẬP NHẬT"):
     # 2. Hợp nhất
     df_total = pd.concat([old_part, df_new], ignore_index=True)
     
-    # 3. Tính toán các bảng giờ (Dùng df_total để có số liệu mới nhất)
+    # 3. Tính toán các bảng giờ
     df_hours_today = calculate_summary(df_total, staff, today, "Giờ tháng (đến hôm nay)", "Giờ năm (đến hôm nay)")
     df_hours_plan = calculate_summary(df_total, staff, change_date, "Giờ tháng (đến ngày phân ca)", "Giờ năm (đến ngày phân ca)")
     
