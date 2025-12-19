@@ -49,7 +49,7 @@ def group_shift(df):
     )
 
 # ==================================================
-# ĐỌC DATA_LOG (NGUỒN DUY NHẤT ĐỂ TÍNH GIỜ)
+# ĐỌC DATA_LOG (NGUỒN DUY NHẤT TÍNH GIỜ)
 # ==================================================
 try:
     df_raw = conn.read(
@@ -85,25 +85,25 @@ with st.sidebar:
     start_date = st.date_input("Tạo lịch từ ngày", today)
     end_date = st.date_input("Đến ngày", today + timedelta(days=365))
 
-    change_date = st.date_input("Áp dụng từ ngày", today)
+    change_date = st.date_input("Thời điểm phân ca (kế hoạch)", today)
     absent_staff = st.multiselect("Nhân sự nghỉ", staff)
 
 # ==================================================
-# 🔒 KHÓA CHỈNH SỬA LỊCH ĐÃ QUA
+# KHÓA CHỈNH SỬA LỊCH ĐÃ QUA
 # ==================================================
 if change_date < today:
-    st.error("⛔ Không được chỉnh sửa hoặc tạo lại lịch cho ngày đã qua.")
+    st.error("⛔ Không được phân ca hoặc chỉnh sửa lịch cho ngày đã qua.")
     st.stop()
 
 # ==================================================
-# GIỮ LỊCH CŨ (CHỈ TỪ HÔM NAY TRỞ ĐI)
+# GIỮ LỊCH CŨ
 # ==================================================
 old_part = df_raw[df_raw["Ngày"].dt.date < change_date]
 
 # ==================================================
 # THUẬT TOÁN PHÂN CA
 # ==================================================
-def generate():
+def generate_schedule():
     rows = []
     active = [s for s in staff if s not in absent_staff]
 
@@ -141,8 +141,8 @@ def generate():
 # ==================================================
 # TẠO LỊCH
 # ==================================================
-if st.button("🚀 TẠO LẠI LỊCH"):
-    df_new = generate()
+if st.button("🚀 TẠO LỊCH & CẬP NHẬT"):
+    df_new = generate_schedule()
     df_new = ensure_df(df_new)
     df_new = force_date(df_new)
 
@@ -164,35 +164,45 @@ if st.button("🚀 TẠO LẠI LỊCH"):
 
     df_export = pd.DataFrame(export)
 
-    # ================= TÍNH GIỜ (CHUẨN – KHÔNG TRÙNG) =================
+    # ==================================================
+    # TÍNH GIỜ – 2 BẢNG (THEO NGHIỆP VỤ CHỐT)
+    # ==================================================
     start_month = today.replace(day=1)
     start_year = today.replace(month=1, day=1)
 
-    df_month = df_raw[
-        (df_raw["Ngày"].dt.date >= start_month) &
-        (df_raw["Ngày"].dt.date <= today)
-    ]
+    # ---- BẢNG A: ĐẾN HÔM NAY ----
+    df_m_today = df_raw[(df_raw["Ngày"].dt.date >= start_month) & (df_raw["Ngày"].dt.date <= today)]
+    df_y_today = df_raw[(df_raw["Ngày"].dt.date >= start_year) & (df_raw["Ngày"].dt.date <= today)]
 
-    df_year = df_raw[
-        (df_raw["Ngày"].dt.date >= start_year) &
-        (df_raw["Ngày"].dt.date <= today)
-    ]
-
-    df_hours = pd.DataFrame({"Nhân viên": staff})
-    df_hours["Giờ tháng"] = df_hours["Nhân viên"].map(
-        df_month.groupby("Nhân viên")["Giờ"].sum()
+    df_hours_today = pd.DataFrame({"Nhân viên": staff})
+    df_hours_today["Giờ tháng (đến hôm nay)"] = df_hours_today["Nhân viên"].map(
+        df_m_today.groupby("Nhân viên")["Giờ"].sum()
+    ).fillna(0)
+    df_hours_today["Giờ năm (đến hôm nay)"] = df_hours_today["Nhân viên"].map(
+        df_y_today.groupby("Nhân viên")["Giờ"].sum()
     ).fillna(0)
 
-    df_hours["Giờ năm"] = df_hours["Nhân viên"].map(
-        df_year.groupby("Nhân viên")["Giờ"].sum()
+    # ---- BẢNG B: ĐẾN THỜI ĐIỂM PHÂN CA ----
+    df_m_plan = df_raw[(df_raw["Ngày"].dt.date >= start_month) & (df_raw["Ngày"].dt.date <= change_date)]
+    df_y_plan = df_raw[(df_raw["Ngày"].dt.date >= start_year) & (df_raw["Ngày"].dt.date <= change_date)]
+
+    df_hours_plan = pd.DataFrame({"Nhân viên": staff})
+    df_hours_plan["Giờ tháng (đến ngày phân ca)"] = df_hours_plan["Nhân viên"].map(
+        df_m_plan.groupby("Nhân viên")["Giờ"].sum()
+    ).fillna(0)
+    df_hours_plan["Giờ năm (đến ngày phân ca)"] = df_hours_plan["Nhân viên"].map(
+        df_y_plan.groupby("Nhân viên")["Giờ"].sum()
     ).fillna(0)
 
     # ================= HIỂN THỊ =================
     st.subheader("📅 Lịch trực")
     st.dataframe(df_export, use_container_width=True)
 
-    st.subheader("⏱️ Tổng giờ làm việc (đến hôm nay)")
-    st.dataframe(df_hours, use_container_width=True)
+    st.subheader("⏱️ Tổng giờ làm việc – ĐẾN HIỆN TẠI")
+    st.dataframe(df_hours_today, use_container_width=True)
+
+    st.subheader("📌 Tổng giờ làm việc – ĐẾN THỜI ĐIỂM PHÂN CA")
+    st.dataframe(df_hours_plan, use_container_width=True)
 
     # ================= GHI GOOGLE SHEET =================
     df_save = df_total.copy()
@@ -210,4 +220,4 @@ if st.button("🚀 TẠO LẠI LỊCH"):
         data=df_export.reset_index(drop=True)
     )
 
-    st.success("✅ Đã cập nhật lịch – giờ tháng/năm ĐÚNG & lịch quá khứ đã khóa")
+    st.success("✅ Đã cập nhật lịch – FILE FINAL ĐÃ KHÓA NGHIỆP VỤ")
