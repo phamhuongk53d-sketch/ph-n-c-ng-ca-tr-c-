@@ -7,7 +7,7 @@ from streamlit_gsheets import GSheetsConnection
 # CẤU HÌNH ỨNG DỤNG
 # ==================================================
 st.set_page_config(
-    page_title="Hệ thống phân công trực công bằng (Production)",
+    page_title="Hệ thống phân công trực công bằng (Final)",
     layout="wide"
 )
 
@@ -15,21 +15,21 @@ SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1IQg-gXpWWL14FjpiPNAaN
 SHEET_DATA = "Data_Log"
 SHEET_VIEW = "Lich_Truc"
 
-conn = st.connection("gsheets", type=GSheetsConnection)
-
 REQUIRED_COLS = ["Ngày", "Ca", "Nhân viên", "Giờ"]
+
+conn = st.connection("gsheets", type=GSheetsConnection)
 
 # ==================================================
 # HÀM TIỆN ÍCH
 # ==================================================
-def vn_day(d):
+def vn_day(d: pd.Timestamp) -> str:
     return ["T2", "T3", "T4", "T5", "T6", "T7", "CN"][d.weekday()] + " " + d.strftime("%d/%m/%Y")
 
-def ensure_dataframe(df):
+def ensure_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame(columns=REQUIRED_COLS)
 
-    df.columns = [c.strip() for c in df.columns]
+    df.columns = [str(c).strip() for c in df.columns]
 
     for c in REQUIRED_COLS:
         if c not in df.columns:
@@ -57,7 +57,10 @@ df_raw["Ngày"] = pd.to_datetime(
     errors="coerce"
 )
 
-df_raw["Giờ"] = pd.to_numeric(df_raw["Giờ"], errors="coerce").fillna(0)
+df_raw["Giờ"] = pd.to_numeric(
+    df_raw["Giờ"],
+    errors="coerce"
+).fillna(0)
 
 df_raw = df_raw.dropna(subset=["Ngày"])
 
@@ -71,6 +74,7 @@ with st.sidebar:
         "Danh sách nhân viên",
         "Trung, Ngà, Liên, Linh, Hà, Bình, Huyền, Thảo, Trang, Hương B"
     )
+
     staff = [s.strip() for s in staff_input.split(",") if s.strip()]
 
     special_staff = st.multiselect(
@@ -84,12 +88,12 @@ with st.sidebar:
     end_date = st.date_input("Đến ngày", start_date + timedelta(days=365))
 
 # ==================================================
-# GIỮ DỮ LIỆU TRƯỚC MỐC – GHI ĐÈ SAU MỐC
+# GIỮ DỮ LIỆU CŨ – GHI ĐÈ SAU MỐC
 # ==================================================
 history_before = df_raw[df_raw["Ngày"].dt.date < start_date]
 
 # ==================================================
-# TÍNH GIỜ LŨY KẾ AN TOÀN
+# TÍNH GIỜ LŨY KẾ (AN TOÀN)
 # ==================================================
 luy_ke = {}
 
@@ -168,7 +172,7 @@ def generate_schedule():
 # ==================================================
 # TẠO – HIỂN THỊ – GHI GOOGLE SHEETS
 # ==================================================
-if st.button("🚀 TẠO LỊCH & CẬP NHẬT (PRODUCTION)"):
+if st.button("🚀 TẠO LỊCH & CẬP NHẬT (FINAL)"):
     df_new = generate_schedule()
 
     if df_new.empty:
@@ -177,13 +181,15 @@ if st.button("🚀 TẠO LỊCH & CẬP NHẬT (PRODUCTION)"):
 
     df_total = pd.concat([history_before, df_new], ignore_index=True)
 
-    # ===== CHIA THEO THÁNG =====
+    # ===== CHIA THEO THÁNG (FIX TRIỆT ĐỂ TYPEERROR) =====
     df_total["Năm"] = df_total["Ngày"].dt.year
     df_total["Tháng"] = df_total["Ngày"].dt.month
 
     export_rows = []
 
     for (y, m), g in df_total.groupby(["Năm", "Tháng"]):
+
+        # ---- TIÊU ĐỀ THÁNG ----
         export_rows.append({
             "Ngày": f"LỊCH PHÂN CÔNG THÁNG {m} NĂM {y}",
             "Ca": "",
@@ -191,7 +197,10 @@ if st.button("🚀 TẠO LỊCH & CẬP NHẬT (PRODUCTION)"):
             "Giờ": ""
         })
 
-        for _, r in g.sort_values("Ngày").iterrows():
+        # ---- SORT CHỈ TRÊN TIMESTAMP ----
+        g_sorted = g[g["Ngày"].notna()].sort_values("Ngày")
+
+        for _, r in g_sorted.iterrows():
             export_rows.append({
                 "Ngày": vn_day(r["Ngày"]),
                 "Ca": r["Ca"],
@@ -220,4 +229,4 @@ if st.button("🚀 TẠO LỊCH & CẬP NHẬT (PRODUCTION)"):
         data=df_export.reset_index(drop=True)
     )
 
-    st.success("✅ Đã cập nhật lịch trực – phiên bản production ổn định")
+    st.success("✅ Đã cập nhật lịch trực – bản FINAL ổn định production")
