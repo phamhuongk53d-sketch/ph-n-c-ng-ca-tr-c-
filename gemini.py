@@ -32,6 +32,13 @@ def get_month_name(month_num: int) -> str:
               "Tháng 7", "Tháng 8", "Tháng 9", "Tháng 10", "Tháng 11", "Tháng 12"]
     return months[month_num]
 
+def get_day_type(weekday: int) -> str:
+    """Phân loại ngày trong tuần: weekday (T2-T6) hoặc weekend (T7, CN)"""
+    if weekday in [0, 1, 2, 3, 4]:  # T2-T6
+        return "weekday"
+    else:  # T7, CN
+        return "weekend"
+
 def create_excel_report(year, staff_hours_summary, monthly_hours_detail, schedule_data):
     """Tạo file Excel báo cáo"""
     output = io.BytesIO()
@@ -204,10 +211,29 @@ with st.sidebar:
     )
     staff = [s.strip() for s in staff_input.split(",") if s.strip()]
 
-    special_staff = st.multiselect(
-        "Chỉ trực ca ngày",
+    st.header("📋 Cấu hình phân công đặc biệt")
+    
+    st.subheader("Nhân viên chỉ trực ca ngày")
+    st.write("Chỉ trực từ Thứ 2 đến Thứ 6:")
+    weekday_only_staff = st.multiselect(
+        "Chọn nhân viên chỉ trực T2-T6",
         staff,
         default=["Trung", "Ngà"]
+    )
+    
+    st.subheader("Cân bằng giờ trực")
+    balance_type = st.radio(
+        "Chiến lược cân bằng",
+        ["Cân bằng theo tháng", "Cân bằng theo cả năm"],
+        help="Cân bằng theo tháng: đảm bảo giờ trực mỗi tháng đồng đều. Cân bằng theo năm: tổng giờ cả năm đồng đều"
+    )
+    
+    max_hours_diff = st.slider(
+        "Chênh lệch giờ tối đa/tháng", 
+        min_value=0, 
+        max_value=40, 
+        value=16,
+        help="Chênh lệch tối đa giờ trực giữa người nhiều nhất và ít nhất trong cùng tháng"
     )
 
     st.header("Thời gian phân lịch")
@@ -325,11 +351,24 @@ if not df_raw.empty:
     st.bar_chart(chart_data)
 
 # ==================================================
-# THUẬT TOÁN PHÂN CA CẢI TIẾN
+# THUẬT TOÁN PHÂN CA CẢI TIẾN VỚI CÂN BẰNG THEO THÁNG
 # ==================================================
-def generate_schedule(staff_list, start_date, end_date, special_staff_list):
+def generate_schedule_balanced(staff_list, start_date, end_date, weekday_only_staff_list, balance_strategy="month"):
+    """
+    Tạo lịch trực với cân bằng theo tháng
+    balance_strategy: "month" (cân bằng theo tháng) hoặc "year" (cân bằng theo năm)
+    """
     rows = []
-    work_hours = {s: luy_ke_hours.get(s, 0) for s in staff_list}
+    
+    # Khởi tạo số giờ theo tháng
+    month_start = start_date.month
+    month_end = end_date.month
+    current_year = start_date.year
+    
+    # Tạo dictionary để theo dõi giờ trực theo tháng
+    monthly_hours_tracker = {}
+    for month in range(month_start, month_end + 1):
+        monthly_hours_tracker[month] = {staff: 0 for staff in staff_list}
     
     # Khởi tạo thời gian có sẵn cho mỗi nhân viên
     available_at = {
@@ -337,19 +376,79 @@ def generate_schedule(staff_list, start_date, end_date, special_staff_list):
         for s in staff_list
     }
     
+    # Tính số giờ lũy kế theo tháng từ lịch sử
+    for staff_member in staff_list:
+        for month in range(month_start, month_end + 1):
+            month_history = history_before[
+                (history_before["Nhân viên"] == staff_member) &
+                (history_before["Tháng"] == month) &
+                (history_before["Năm"] == current_year)
+            ]
+            monthly_hours_tracker[month][staff_member] = month_history["Giờ"].sum()
+    
     curr_date = start_date
     while curr_date <= end_date:
+        current_month = curr_date.month
+        current_weekday = curr_date.weekday()  # 0=Monday, 6=Sunday
         base = datetime.combine(curr_date, datetime.min.time())
         
+        # Xác định loại ngày
+        if current_weekday < 5:  # Thứ 2 đến Thứ 6
+            day_type = "weekday"
+        else:  # Thứ 7, Chủ nhật
+            day_type = "weekend"
+        
         # ===== CA NGÀY (08–16) =====
-        day_candidates = [
-            s for s in staff_list
-            if available_at[s] <= base.replace(hour=8)
-        ]
-        # Ưu tiên nhân viên chỉ trực ca ngày, sau đó sắp xếp theo số giờ ít nhất
-        day_candidates.sort(
-            key=lambda s: (0 if s in special_staff_list else 1, work_hours[s])
-        )
+        # Phân loại nhân viên theo điều kiện
+        if day_type == "weekday":
+            # Ngày trong tuần: cả nhân viên thường và nhân viên chỉ trực T2-T6
+            day_candidates = [
+                s for s in staff_list
+                if available_at[s] <= base.replace(hour=8)
+            ]
+        else:
+            # Cuối tuần: chỉ nhân viên thường (không bao gồm nhân viên chỉ trực T2-T6)
+            day_candidates = [
+                s for s in staff_list
+                if available_at[s] <= base.replace(hour=8) 
+                and s not in weekday_only_staff_list
+            ]
+        
+        # Sắp xếp theo chiến lược cân bằng
+        if balance_strategy == "month":
+            # Cân bằng theo tháng: ưu tiên người có ít giờ nhất trong tháng hiện tại
+            day_candidates.sort(
+                key=lambda s: (
+                    0 if (day_type == "weekday" and s in weekday_only_staff_list) else 1,
+                    monthly_hours_tracker[current_month].get(s, 0)
+                )
+            )
+        else:
+            # Cân bằng theo năm: ưu tiên người có ít giờ nhất tổng cộng
+            day_candidates.sort(
+                key=lambda s: (
+                    0 if (day_type == "weekday" and s in weekday_only_staff_list) else 1,
+                    sum(monthly_hours_tracker[m].get(s, 0) for m in monthly_hours_tracker)
+                )
+            )
+        
+        # Kiểm tra chênh lệch giờ trong tháng
+        def is_acceptable_candidate(candidate, selected_candidates, month_hours):
+            """Kiểm tra xem chọn candidate này có làm chênh lệch giờ quá lớn không"""
+            if not selected_candidates:
+                return True
+            
+            # Lấy số giờ của candidate
+            candidate_hours = month_hours.get(candidate, 0)
+            
+            # Tính số giờ trung bình của những người đã chọn
+            selected_hours = [month_hours.get(s, 0) for s in selected_candidates]
+            avg_selected = sum(selected_hours) / len(selected_hours) if selected_hours else 0
+            
+            # Kiểm tra chênh lệch
+            if abs(candidate_hours - avg_selected) > max_hours_diff:
+                return False
+            return True
         
         # Chọn 2 người cho ca ngày
         selected_day = []
@@ -357,7 +456,13 @@ def generate_schedule(staff_list, start_date, end_date, special_staff_list):
             if len(selected_day) >= 2:
                 break
             if s not in selected_day:
-                selected_day.append(s)
+                # Kiểm tra chênh lệch giờ
+                if is_acceptable_candidate(s, selected_day, monthly_hours_tracker[current_month]):
+                    selected_day.append(s)
+        
+        # Nếu không đủ 2 người thỏa mãn chênh lệch, lấy 2 người đầu tiên
+        if len(selected_day) < 2 and day_candidates:
+            selected_day = day_candidates[:2]
         
         for s in selected_day:
             rows.append({
@@ -366,19 +471,25 @@ def generate_schedule(staff_list, start_date, end_date, special_staff_list):
                 "Nhân viên": s,
                 "Giờ": 8,
                 "Năm": curr_date.year,
-                "Tháng": curr_date.month
+                "Tháng": current_month
             })
-            work_hours[s] += 8
+            # Cập nhật giờ theo tháng
+            monthly_hours_tracker[current_month][s] = monthly_hours_tracker[current_month].get(s, 0) + 8
             available_at[s] = base.replace(hour=16) + timedelta(hours=16)
         
         # ===== CA ĐÊM (16–08) =====
         night_candidates = [
             s for s in staff_list
-            if s not in special_staff_list
+            if s not in weekday_only_staff_list  # Nhân viên chỉ trực T2-T6 không trực đêm
             and available_at[s] <= base.replace(hour=16)
             and s not in selected_day  # Tránh trùng với ca ngày cùng ngày
         ]
-        night_candidates.sort(key=lambda s: work_hours[s])
+        
+        # Sắp xếp theo chiến lược cân bằng
+        if balance_strategy == "month":
+            night_candidates.sort(key=lambda s: monthly_hours_tracker[current_month].get(s, 0))
+        else:
+            night_candidates.sort(key=lambda s: sum(monthly_hours_tracker[m].get(s, 0) for m in monthly_hours_tracker))
         
         # Chọn 2 người cho ca đêm
         selected_night = []
@@ -386,7 +497,13 @@ def generate_schedule(staff_list, start_date, end_date, special_staff_list):
             if len(selected_night) >= 2:
                 break
             if s not in selected_night:
-                selected_night.append(s)
+                # Kiểm tra chênh lệch giờ
+                if is_acceptable_candidate(s, selected_night, monthly_hours_tracker[current_month]):
+                    selected_night.append(s)
+        
+        # Nếu không đủ 2 người thỏa mãn chênh lệch, lấy 2 người đầu tiên
+        if len(selected_night) < 2 and night_candidates:
+            selected_night = night_candidates[:2]
         
         for s in selected_night:
             rows.append({
@@ -395,14 +512,15 @@ def generate_schedule(staff_list, start_date, end_date, special_staff_list):
                 "Nhân viên": s,
                 "Giờ": 16,
                 "Năm": curr_date.year,
-                "Tháng": curr_date.month
+                "Tháng": current_month
             })
-            work_hours[s] += 16
+            # Cập nhật giờ theo tháng
+            monthly_hours_tracker[current_month][s] = monthly_hours_tracker[current_month].get(s, 0) + 16
             available_at[s] = base + timedelta(days=2)
         
         curr_date += timedelta(days=1)
     
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows), monthly_hours_tracker
 
 # ==================================================
 # XỬ LÝ ĐIỀU CHỈNH NHÂN SỰ
@@ -421,6 +539,14 @@ def handle_staff_adjustment(df_existing, adjust_date, action, staff_list):
 # TẠO & HIỂN THỊ LỊCH THEO THÁNG
 # ==================================================
 if st.button("🚀 TẠO & CẬP NHẬT LỊCH TRỰC"):
+    # Hiển thị cấu hình đã chọn
+    st.info(f"""
+    **Cấu hình phân công:**
+    - Nhân viên chỉ trực T2-T6: {', '.join(weekday_only_staff) if weekday_only_staff else 'Không có'}
+    - Chiến lược cân bằng: {'Theo tháng' if balance_type == 'Cân bằng theo tháng' else 'Theo cả năm'}
+    - Chênh lệch giờ tối đa/tháng: {max_hours_diff} giờ
+    """)
+    
     # Xử lý điều chỉnh nhân sự nếu có
     if 'adjust_date' in locals() and adjust_date >= start_date.date():
         df_raw = handle_staff_adjustment(df_raw, adjust_date, action, staff)
@@ -430,8 +556,14 @@ if st.button("🚀 TẠO & CẬP NHẬT LỊCH TRỰC"):
         elif action == "Xóa nhân sự" and 'remove_staff' in locals() and remove_staff in staff:
             staff.remove(remove_staff)
     
-    # Tạo lịch mới
-    df_new = generate_schedule(staff, start_date, end_date, special_staff)
+    # Tạo lịch mới với cân bằng
+    df_new, monthly_hours_tracker = generate_schedule_balanced(
+        staff, 
+        start_date, 
+        end_date, 
+        weekday_only_staff,
+        "month" if balance_type == "Cân bằng theo tháng" else "year"
+    )
     
     # Kết hợp dữ liệu cũ (trước ngày bắt đầu) và mới
     # Loại bỏ các ngày trùng trong khoảng thời gian mới
@@ -490,7 +622,7 @@ if st.button("🚀 TẠO & CẬP NHẬT LỊCH TRỰC"):
             st.table(df_pivot)
             
             # Tính tổng giờ mỗi nhân viên trong tháng
-            st.markdown("**Bảng tổng số giờ làm từng tháng của một người:**")
+            st.markdown(f"**Bảng tổng số giờ làm {get_month_name(month)}:**")
             month_hours = (
                 month_data
                 .groupby("Nhân viên")["Giờ"]
@@ -506,6 +638,18 @@ if st.button("🚀 TẠO & CẬP NHẬT LỊCH TRỰC"):
             # Định dạng số giờ
             month_hours_with_index["Giờ"] = month_hours_with_index["Giờ"].astype(int)
             
+            # Tính chênh lệch
+            if len(month_hours) > 1:
+                min_hours = month_hours["Giờ"].min()
+                max_hours = month_hours["Giờ"].max()
+                diff_hours = max_hours - min_hours
+                
+                # Hiển thị cảnh báo nếu chênh lệch lớn
+                if diff_hours > max_hours_diff:
+                    st.warning(f"⚠️ Chênh lệch giờ trong tháng: {diff_hours} giờ (vượt quá giới hạn {max_hours_diff} giờ)")
+                else:
+                    st.success(f"✓ Chênh lệch giờ trong tháng: {diff_hours} giờ (trong giới hạn)")
+            
             st.dataframe(month_hours_with_index, hide_index=True)
             
             # Hiển thị thống kê nhanh
@@ -520,174 +664,37 @@ if st.button("🚀 TẠO & CẬP NHẬT LỊCH TRỰC"):
             
             st.markdown("---")
     
+    # ================== HIỂN THỊ PHÂN TÍCH CÂN BẰNG ==================
+    st.subheader("⚖️ PHÂN TÍCH CÂN BẰNG GIỜ TRỰC")
+    
+    # Tạo bảng tổng hợp chênh lệch theo tháng
+    balance_analysis = []
+    for month in range(start_month, end_month + 1):
+        if month in monthly_hours_tracker:
+            month_hours = monthly_hours_tracker[month]
+            # Lọc chỉ những người có giờ > 0
+            active_staff_hours = {k: v for k, v in month_hours.items() if v > 0}
+            if active_staff_hours:
+                min_h = min(active_staff_hours.values())
+                max_h = max(active_staff_hours.values())
+                diff = max_h - min_h
+                avg_h = sum(active_staff_hours.values()) / len(active_staff_hours)
+                balance_analysis.append({
+                    "Tháng": get_month_name(month),
+                    "Số NV trực": len(active_staff_hours),
+                    "Giờ thấp nhất": min_h,
+                    "Giờ cao nhất": max_h,
+                    "Chênh lệch": diff,
+                    "Trung bình": f"{avg_h:.1f}",
+                    "Trạng thái": "✅ Tốt" if diff <= max_hours_diff else "⚠️ Cần điều chỉnh"
+                })
+    
+    if balance_analysis:
+        balance_df = pd.DataFrame(balance_analysis)
+        st.dataframe(balance_df, hide_index=True)
+    
     # ================== CẬP NHẬT DỮ LIỆU TỔNG GIỜ NĂM ==================
     # Tính lại tổng giờ cho mỗi nhân viên trong năm
     yearly_total_hours_new = {}
     monthly_hours_detail_new = {}
     
-    for month in range(1, 13):
-        month_data = df_total[
-            (df_total["Năm"] == year) & 
-            (df_total["Tháng"] == month)
-        ]
-        
-        if not month_data.empty:
-            month_hours = month_data.groupby("Nhân viên")["Giờ"].sum().to_dict()
-            monthly_hours_detail_new[month] = month_hours
-            
-            for staff_member, hours in month_hours.items():
-                yearly_total_hours_new[staff_member] = yearly_total_hours_new.get(staff_member, 0) + hours
-        else:
-            monthly_hours_detail_new[month] = {}
-    
-    # Thêm những nhân viên không có giờ trực (giờ = 0)
-    for staff_member in staff:
-        if staff_member not in yearly_total_hours_new:
-            yearly_total_hours_new[staff_member] = 0
-    
-    # Cập nhật bảng tổng giờ năm
-    st.subheader(f"📈 BẢNG TỔNG SỐ GIỜ TRỰC NĂM {year} (SAU CẬP NHẬT)")
-    
-    yearly_total_df_new = pd.DataFrame(
-        list(yearly_total_hours_new.items()),
-        columns=["Nhân viên", f"Tổng giờ trực {year}"]
-    ).sort_values(f"Tổng giờ trực {year}", ascending=True)
-    
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        st.dataframe(yearly_total_df_new, use_container_width=True, hide_index=True)
-    
-    with col2:
-        st.metric(
-            label="Tổng giờ trực cả năm",
-            value=int(yearly_total_df_new[f"Tổng giờ trực {year}"].sum())
-        )
-        st.metric(
-            label="Trung bình giờ/người",
-            value=f"{yearly_total_df_new[f'Tổng giờ trực {year}'].mean():.1f}"
-        )
-    
-    # ================== NÚT XUẤT EXCEL ==================
-    st.subheader("📤 XUẤT DỮ LIỆU")
-    
-    # Tạo file Excel
-    excel_file = create_excel_report(
-        year=year,
-        staff_hours_summary=yearly_total_hours_new,
-        monthly_hours_detail=monthly_hours_detail_new,
-        schedule_data=schedule_by_month
-    )
-    
-    # Nút tải xuống
-    st.download_button(
-        label="📥 TẢI XUỐNG FILE EXCEL BÁO CÁO",
-        data=excel_file,
-        file_name=f"Bao_cao_truc_lam_{year}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        help="Tải xuống file Excel đầy đủ báo cáo giờ trực"
-    )
-    
-    # ================== GHI GOOGLE SHEETS ==================
-    # Lưu dữ liệu chi tiết
-    df_save_raw = df_total.copy()
-    df_save_raw["Ngày"] = pd.to_datetime(df_save_raw["Ngày"]).dt.strftime("%d/%m/%Y")
-    
-    conn.update(
-        spreadsheet=SPREADSHEET_URL,
-        worksheet="Data_Log",
-        data=df_save_raw.reset_index(drop=True)
-    )
-    
-    # Tạo sheet riêng cho mỗi tháng
-    for month in range(1, 13):
-        month_data = df_total[
-            (df_total["Năm"] == year) & 
-            (df_total["Tháng"] == month)
-        ].copy()
-        
-        if not month_data.empty:
-            # Chuẩn bị dữ liệu cho sheet tháng
-            df_month_view = month_data.copy()
-            df_group = (
-                df_month_view
-                .groupby(["Ngày", "Ca"], as_index=False)["Nhân viên"]
-                .apply(lambda x: " ".join(x))
-            )
-            
-            df_pivot = (
-                df_group
-                .pivot(index="Ngày", columns="Ca", values="Nhân viên")
-                .reindex(columns=["Ca: 8h00 - 16h00", "Ca: 16h00 - 8h00"])
-                .fillna("")
-                .reset_index()
-                .sort_values("Ngày")
-            )
-            
-            df_pivot["Ngày"] = df_pivot["Ngày"].apply(get_vietnamese_weekday)
-            
-            # Cập nhật sheet tháng (tạo mới nếu chưa có)
-            sheet_name = f"Tháng {month}"
-            try:
-                conn.update(
-                    spreadsheet=SPREADSHEET_URL,
-                    worksheet=sheet_name,
-                    data=df_pivot.reset_index(drop=True)
-                )
-            except:
-                # Nếu sheet chưa tồn tại, tạo mới
-                st.warning(f"Sheet '{sheet_name}' chưa tồn tại, cần tạo thủ công")
-    
-    st.success("✅ Đã lưu lịch trực thành công!")
-
-# ==================================================
-# HIỂN THỊ LỊCH HIỆN TẠI
-# ==================================================
-if not df_raw.empty:
-    st.subheader("📋 Lịch trực hiện tại")
-    
-    # Hiển thị theo từng tháng
-    current_year = datetime.now().year
-    for month in range(1, 13):
-        month_data = df_raw[
-            (df_raw["Năm"] == current_year) & 
-            (df_raw["Tháng"] == month)
-        ].copy()
-        
-        if not month_data.empty:
-            st.markdown(f"### 📅 LỊCH PHÂN CÔNG {get_month_name(month).upper()} NĂM {current_year} (HIỆN TẠI)")
-            
-            df_month_view = month_data.copy()
-            df_group = (
-                df_month_view
-                .groupby(["Ngày", "Ca"], as_index=False)["Nhân viên"]
-                .apply(lambda x: " ".join(x))
-            )
-            
-            df_pivot = (
-                df_group
-                .pivot(index="Ngày", columns="Ca", values="Nhân viên")
-                .reindex(columns=["Ca: 8h00 - 16h00", "Ca: 16h00 - 8h00"])
-                .fillna("")
-                .reset_index()
-                .sort_values("Ngày")
-            )
-            
-            df_pivot["Ngày"] = df_pivot["Ngày"].apply(get_vietnamese_weekday)
-            
-            st.table(df_pivot)
-            
-            # Hiển thị tổng giờ tháng hiện tại
-            month_hours_current = (
-                month_data
-                .groupby("Nhân viên")["Giờ"]
-                .sum()
-                .reset_index()
-                .sort_values("Giờ")
-            )
-            
-            if not month_hours_current.empty:
-                st.markdown(f"**Tổng giờ tháng {get_month_name(month)}:**")
-                st.dataframe(month_hours_current, hide_index=True)
-            
-            st.markdown("---")
