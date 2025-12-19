@@ -71,7 +71,7 @@ with st.sidebar:
 
     staff_input = st.text_area(
         "Danh sách nhân viên",
-        "Trung, Ngà, Liên, Linh, Hà, Bình, Huyền, Thảo, Trang, Hương B"
+        "Trung, Ngà, Liên, Linh, Hà, Bình, Huyền, Thảo, Trang, HươngB"
     )
     staff = [s.strip() for s in staff_input.split(",") if s.strip()]
 
@@ -229,3 +229,4 @@ if st.button("🚀 TẠO LỊCH & CẬP NHẬT (FINAL)"):
     )
 
     st.success("✅ Đã cập nhật lịch trực – BẢN CUỐI ỔN ĐỊNH PRODUCTION")
+
