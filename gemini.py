@@ -16,14 +16,11 @@ REQUIRED_COLS = ["Ngày", "Ca", "Nhân viên", "Giờ"]
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 # ==================================================
-# SESSION STATE
-# ==================================================
-if "schedule_created" not in st.session_state:
-    st.session_state.schedule_created = False
-
-# ==================================================
 # HÀM TIỆN ÍCH
 # ==================================================
+def vn_day(d):
+    return ["T2","T3","T4","T5","T6","T7","CN"][d.weekday()] + " - " + d.strftime("%d/%m/%Y")
+
 def ensure_df(df):
     if df is None or df.empty:
         return pd.DataFrame(columns=REQUIRED_COLS)
@@ -37,103 +34,130 @@ def parse_date(df):
     return df.dropna(subset=["Ngày"])
 
 # ==================================================
-# SIDEBAR
+# ĐỌC DỮ LIỆU CŨ
 # ==================================================
-today = datetime.now().date()
+try:
+    df_old = conn.read(spreadsheet=SPREADSHEET_URL, worksheet=SHEET_DATA, ttl=0)
+except:
+    df_old = pd.DataFrame()
 
+df_old = ensure_df(df_old)
+df_old = parse_date(df_old)
+df_old["Giờ"] = pd.to_numeric(df_old["Giờ"], errors="coerce").fillna(0)
+
+# ==================================================
+# SIDEBAR – CẤU HÌNH
+# ==================================================
 with st.sidebar:
     st.header("Nhân sự")
+
     staff_input = st.text_area(
         "Danh sách nhân viên",
         "Trung, Ngà, Liên, Linh, Hà, Bình, Huyền, Thảo, Trang, HươngB"
     )
     staff = [s.strip() for s in staff_input.split(",") if s.strip()]
+    special_staff = ["Trung", "Ngà"]
 
     st.header("Khoảng thời gian")
-    start_date = st.date_input("Từ ngày", today)
-    end_date = st.date_input("Đến ngày", start_date + timedelta(days=7))
+    start_date = st.date_input("Từ ngày", datetime.now().date())
+    end_date = st.date_input("Đến ngày", start_date + timedelta(days=30))
+
+    st.header("Thay đổi nhân sự")
+    change_date = st.date_input("Áp dụng từ ngày", start_date)
+    absent_staff = st.multiselect("Nhân sự nghỉ / bận từ ngày này", staff)
 
 # ==================================================
-# KHÓA QUÁ KHỨ
+# KHÓA NGÀY QUÁ KHỨ
 # ==================================================
-if start_date < today:
-    st.error("❌ Không được tạo lịch ở thời gian quá khứ.")
+today = datetime.now().date()
+if start_date < today or change_date < today:
+    st.error("❌ Không được thay đổi hoặc tạo lịch ở thời gian quá khứ.")
     st.stop()
 
 # ==================================================
-# THUẬT TOÁN TẠO LỊCH (MẪU – CHẠY ĐƯỢC NGAY)
-# 👉 SẼ THAY BẰNG THUẬT TOÁN CHÍNH CỦA ANH/CHỊ
+# GIỮ LỊCH CŨ TRƯỚC NGÀY THAY ĐỔI
+# ==================================================
+df_fixed = df_old[df_old["Ngày"].dt.date < change_date]
+
+# ==================================================
+# GIỜ LŨY KẾ
+# ==================================================
+hours = {s: 0 for s in staff}
+for s in staff:
+    hours[s] = df_fixed[df_fixed["Nhân viên"] == s]["Giờ"].sum()
+
+# ==================================================
+# THUẬT TOÁN PHÂN CA
 # ==================================================
 def generate_schedule():
     rows = []
-    curr = start_date
+    active_staff = [s for s in staff if s not in absent_staff]
+    available_at = {s: datetime.min for s in active_staff}
+
+    curr = change_date
     while curr <= end_date:
-        for s in staff[:2]:
-            rows.append({
-                "Ngày": curr.strftime("%d/%m/%Y"),
-                "Ca": "Ca ngày",
-                "Nhân viên": s,
-                "Giờ": 8
-            })
+        base = datetime.combine(curr, datetime.min.time())
+        is_weekday = curr.weekday() < 5
+
+        # CA NGÀY
+        day_candidates = []
+        for s in active_staff:
+            if available_at[s] <= base.replace(hour=8):
+                if s in special_staff:
+                    if is_weekday:
+                        day_candidates.append(s)
+                else:
+                    day_candidates.append(s)
+
+        day_candidates.sort(key=lambda s: hours[s])
+        for s in day_candidates[:2]:
+            rows.append({"Ngày": curr, "Ca": "Ca ngày", "Nhân viên": s, "Giờ": 8})
+            hours[s] += 8
+            available_at[s] = base.replace(hour=16) + timedelta(hours=16)
+
+        # CA ĐÊM
+        night_candidates = [
+            s for s in active_staff
+            if s not in special_staff and available_at[s] <= base.replace(hour=16)
+        ]
+        night_candidates.sort(key=lambda s: hours[s])
+
+        for s in night_candidates[:2]:
+            rows.append({"Ngày": curr, "Ca": "Ca đêm", "Nhân viên": s, "Giờ": 16})
+            hours[s] += 16
+            available_at[s] = base + timedelta(days=2)
+
         curr += timedelta(days=1)
+
     return pd.DataFrame(rows)
 
 # ==================================================
-# NÚT 1 – TẠO / CẬP NHẬT LỊCH (GHI DATA_LOG)
+# TẠO / TẠO LẠI LỊCH
 # ==================================================
-st.subheader("📋 LỊCH TRỰC CA")
-
 if st.button("🚀 TẠO / CẬP NHẬT LỊCH"):
     df_new = generate_schedule()
-    df_new = ensure_df(df_new)
+    df_all = pd.concat([df_fixed, df_new], ignore_index=True)
+    df_all = parse_date(df_all).sort_values("Ngày")
 
-    # 🔥 GHI THẬT VÀO DATA_LOG
-    conn.update(
-        spreadsheet=SPREADSHEET_URL,
-        worksheet=SHEET_DATA,
-        data=df_new.reset_index(drop=True)
-    )
-
-    # (tuỳ chọn) ghi lịch hiển thị
-    conn.update(
-        spreadsheet=SPREADSHEET_URL,
-        worksheet=SHEET_VIEW,
-        data=df_new.reset_index(drop=True)
-    )
-
-    st.session_state.schedule_created = True
-    st.success("✅ Đã tạo lịch và GHI vào Data_Log thành công")
-
-# ==================================================
-# TÍNH TỔNG GIỜ – CHỈ SAU KHI ĐÃ GHI DATA_LOG
-# ==================================================
-st.subheader("⏱️ TỔNG SỐ GIỜ TRỰC")
-
-def calculate_hours_from_datalog():
-    df = conn.read(spreadsheet=SPREADSHEET_URL, worksheet=SHEET_DATA, ttl=0)
-    df = ensure_df(df)
-    df = parse_date(df)
-    df["Giờ"] = pd.to_numeric(df["Giờ"], errors="coerce").fillna(0)
-
-    today = datetime.now().date()
-    start_month = datetime(today.year, today.month, 1)
-    start_year = datetime(today.year, 1, 1)
-
+    # HIỂN THỊ DẠNG BIỂU MẪU
     rows = []
-    for s in staff:
-        df_s = df[df["Nhân viên"] == s]
+    for d, g in df_all.groupby("Ngày", sort=False):
         rows.append({
-            "Nhân viên": s,
-            "Giờ tháng hiện tại": int(df_s[df_s["Ngày"] >= start_month]["Giờ"].sum()),
-            "Giờ năm hiện tại": int(df_s[df_s["Ngày"] >= start_year]["Giờ"].sum()),
-            "Tổng giờ": int(df_s["Giờ"].sum())
+            "Ngày": vn_day(d),
+            "Ca: 8h00 – 16h00": ", ".join(g[g["Ca"] == "Ca ngày"]["Nhân viên"]),
+            "Ca: 16h00 – 8h00": ", ".join(g[g["Ca"] == "Ca đêm"]["Nhân viên"])
         })
 
-    return pd.DataFrame(rows)
+    df_display = pd.DataFrame(rows)
 
-if st.button(
-    "🔄 TÍNH TỔNG GIỜ",
-    disabled=not st.session_state.schedule_created
-):
-    df_hours = calculate_hours_from_datalog()
-    st.dataframe(df_hours, use_container_width=True)
+    st.subheader("📋 LỊCH TRỰC CA")
+    st.dataframe(df_display, use_container_width=True)
+
+    # LƯU GOOGLE SHEETS
+    df_save = df_all.copy()
+    df_save["Ngày"] = df_save["Ngày"].dt.strftime("%d/%m/%Y")
+
+    conn.update(spreadsheet=SPREADSHEET_URL, worksheet=SHEET_DATA, data=df_save)
+    conn.update(spreadsheet=SPREADSHEET_URL, worksheet=SHEET_VIEW, data=df_display)
+
+    st.success("✅ Đã tạo lại lịch theo thay đổi nhân sự (chỉ áp dụng tương lai)")
