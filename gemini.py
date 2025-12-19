@@ -81,7 +81,7 @@ with st.sidebar:
         default=["Trung", "Ngà"]
     )
 
-    st.header("Khoảng thời gian")
+    st.header("Khoảng thời gian tạo lịch")
     start_date = st.date_input("Từ ngày", datetime.now().date())
     end_date = st.date_input("Đến ngày", start_date + timedelta(days=365))
 
@@ -119,7 +119,7 @@ def generate_schedule_from_change():
     while curr <= end_date:
         base = datetime.combine(curr, datetime.min.time())
 
-        # CA NGÀY
+        # ----- CA NGÀY -----
         day_candidates = [
             s for s in active_staff
             if available_at[s] <= base.replace(hour=8)
@@ -138,7 +138,7 @@ def generate_schedule_from_change():
             hours[s] += 8
             available_at[s] = base.replace(hour=16) + timedelta(hours=16)
 
-        # CA ĐÊM
+        # ----- CA ĐÊM -----
         night_candidates = [
             s for s in active_staff
             if s not in special_staff and available_at[s] <= base.replace(hour=16)
@@ -176,6 +176,9 @@ if st.button("🚀 TẠO LẠI LỊCH TỪ NGÀY THAY ĐỔI"):
     # ==================================================
     df_view = group_shift_view(df_total)
 
+    today = datetime.now().date()
+    df_view = df_view[df_view["Ngày"].dt.date <= today]
+
     export_rows = []
     for (y, m), g in df_view.groupby([df_view["Ngày"].dt.year, df_view["Ngày"].dt.month]):
         export_rows.append({
@@ -195,28 +198,34 @@ if st.button("🚀 TẠO LẠI LỊCH TỪ NGÀY THAY ĐỔI"):
     df_export = pd.DataFrame(export_rows)
 
     # ==================================================
-    # TÍNH TỔNG GIỜ
+    # TÍNH TỔNG GIỜ (RESET ĐÚNG THÁNG / NĂM)
     # ==================================================
-    today = datetime.now().date()
     start_month = today.replace(day=1)
-    selected_year = start_date.year
+    start_year = today.replace(month=1, day=1)
 
     df_month = df_total[
         (df_total["Ngày"].dt.date >= start_month) &
         (df_total["Ngày"].dt.date <= today)
     ]
 
-    df_year = df_total[df_total["Ngày"].dt.year == selected_year]
+    df_year = df_total[
+        (df_total["Ngày"].dt.date >= start_year) &
+        (df_total["Ngày"].dt.date <= today)
+    ]
 
     hours_month = df_month.groupby("Nhân viên")["Giờ"].sum().reset_index(name="Giờ tháng")
     hours_year = df_year.groupby("Nhân viên")["Giờ"].sum().reset_index(name="Giờ năm")
 
-    df_hours = pd.merge(hours_month, hours_year, on="Nhân viên", how="outer").fillna(0)
+    df_hours = (
+        pd.merge(hours_month, hours_year, on="Nhân viên", how="outer")
+        .fillna(0)
+        .sort_values("Nhân viên")
+    )
 
     # ==================================================
     # HIỂN THỊ
     # ==================================================
-    st.subheader("📅 Lịch trực (hiển thị theo ca)")
+    st.subheader("📅 Lịch trực (theo ca – đến hôm nay)")
     st.dataframe(df_export, use_container_width=True)
 
     st.subheader("⏱️ Tổng số giờ trực")
@@ -240,4 +249,4 @@ if st.button("🚀 TẠO LẠI LỊCH TỪ NGÀY THAY ĐỔI"):
         data=df_export.reset_index(drop=True)
     )
 
-    st.success("✅ Đã cập nhật lịch – bản FINAL đã chốt hoàn toàn")
+    st.success("✅ Đã cập nhật lịch – FILE FINAL đã khóa nghiệp vụ")
