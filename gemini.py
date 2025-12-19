@@ -18,9 +18,6 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 # ==================================================
 # HÀM TIỆN ÍCH
 # ==================================================
-def vn_day(d):
-    return ["T2","T3","T4","T5","T6","T7","CN"][d.weekday()] + " - " + d.strftime("%d/%m/%Y")
-
 def ensure_df(df):
     if df is None or df.empty:
         return pd.DataFrame(columns=REQUIRED_COLS)
@@ -34,10 +31,14 @@ def parse_date(df):
     return df.dropna(subset=["Ngày"])
 
 # ==================================================
-# ĐỌC DATA_LOG
+# ĐỌC DATA_LOG (NGUỒN DUY NHẤT ĐỂ TÍNH GIỜ)
 # ==================================================
 try:
-    df_log = conn.read(spreadsheet=SPREADSHEET_URL, worksheet=SHEET_DATA, ttl=0)
+    df_log = conn.read(
+        spreadsheet=SPREADSHEET_URL,
+        worksheet=SHEET_DATA,
+        ttl=0
+    )
 except:
     df_log = pd.DataFrame()
 
@@ -45,12 +46,8 @@ df_log = ensure_df(df_log)
 df_log = parse_date(df_log)
 df_log["Giờ"] = pd.to_numeric(df_log["Giờ"], errors="coerce").fillna(0)
 
-today = datetime.now().date()
-current_year = today.year
-current_month = today.month
-
 # ==================================================
-# SIDEBAR
+# SIDEBAR – DANH SÁCH NHÂN VIÊN
 # ==================================================
 with st.sidebar:
     st.header("Nhân sự")
@@ -59,58 +56,54 @@ with st.sidebar:
         "Trung, Ngà, Liên, Linh, Hà, Bình, Huyền, Thảo, Trang, HươngB"
     )
     staff = [s.strip() for s in staff_input.split(",") if s.strip()]
-    special_staff = ["Trung", "Ngà"]
-
-    st.header("Khoảng thời gian")
-    start_date = st.date_input("Từ ngày", today)
-    end_date = st.date_input("Đến ngày", start_date + timedelta(days=30))
-
-    st.header("Thay đổi nhân sự")
-    change_date = st.date_input("Áp dụng từ ngày", start_date)
-    absent_staff = st.multiselect("Nhân sự nghỉ / bận từ ngày này", staff)
 
 # ==================================================
-# KHÓA QUÁ KHỨ
+# MỐC THỜI GIAN CHUẨN
 # ==================================================
-if start_date < today or change_date < today:
-    st.error("❌ Không được tạo hoặc thay đổi lịch ở thời gian quá khứ.")
-    st.stop()
+today = datetime.now().date()
+
+start_month = datetime(today.year, today.month, 1)
+start_year = datetime(today.year, 1, 1)
 
 # ==================================================
-# TÍNH TỔNG GIỜ
+# TÍNH TỔNG GIỜ – CHUẨN 100%
 # ==================================================
-def calculate_hours(df, staff_list):
+def calculate_hours_from_datalog(df, staff_list):
+    # Chỉ lấy dữ liệu <= hôm nay
     df = df[df["Ngày"].dt.date <= today].copy()
-    df["Năm"] = df["Ngày"].dt.year
-    df["Tháng"] = df["Ngày"].dt.month
 
-    month_sum = df[
-        (df["Năm"] == current_year) &
-        (df["Tháng"] == current_month)
-    ].groupby("Nhân viên")["Giờ"].sum()
+    result = []
 
-    year_sum = df[
-        df["Năm"] == current_year
-    ].groupby("Nhân viên")["Giờ"].sum()
-
-    total_sum = df.groupby("Nhân viên")["Giờ"].sum()
-
-    rows = []
     for s in staff_list:
-        rows.append({
+        df_s = df[df["Nhân viên"] == s]
+
+        hours_month = df_s[
+            (df_s["Ngày"] >= start_month) &
+            (df_s["Ngày"].dt.date <= today)
+        ]["Giờ"].sum()
+
+        hours_year = df_s[
+            (df_s["Ngày"] >= start_year) &
+            (df_s["Ngày"].dt.date <= today)
+        ]["Giờ"].sum()
+
+        result.append({
             "Nhân viên": s,
-            "Giờ tháng hiện tại": int(month_sum.get(s, 0)),
-            "Giờ năm hiện tại": int(year_sum.get(s, 0)),
-            "Tổng giờ tất cả": int(total_sum.get(s, 0))
+            "Giờ tháng hiện tại": int(hours_month),
+            "Giờ năm hiện tại": int(hours_year)
         })
 
-    return pd.DataFrame(rows)
+    return pd.DataFrame(result)
 
 # ==================================================
-# HIỂN THỊ LỊCH
+# HIỂN THỊ LỊCH (CHỈ ĐỂ XEM)
 # ==================================================
 try:
-    df_view = conn.read(spreadsheet=SPREADSHEET_URL, worksheet=SHEET_VIEW, ttl=0)
+    df_view = conn.read(
+        spreadsheet=SPREADSHEET_URL,
+        worksheet=SHEET_VIEW,
+        ttl=0
+    )
 except:
     df_view = pd.DataFrame()
 
@@ -118,15 +111,15 @@ st.subheader("📋 LỊCH TRỰC CA")
 st.dataframe(df_view, use_container_width=True)
 
 # ==================================================
-# HIỂN THỊ TỔNG GIỜ
+# HIỂN THỊ TỔNG GIỜ (TÍNH TỪ DATA_LOG)
 # ==================================================
 st.subheader("⏱️ TỔNG SỐ GIỜ TRỰC")
 
-df_hours = calculate_hours(df_log, staff)
+df_hours = calculate_hours_from_datalog(df_log, staff)
 
 st.caption(
-    f"Giờ tháng: từ 01/{current_month:02}/{current_year} → hôm nay | "
-    f"Giờ năm: từ 01/01/{current_year} → hôm nay"
+    f"Giờ tháng: từ 01/{today.month:02}/{today.year} đến hôm nay | "
+    f"Giờ năm: từ 01/01/{today.year} đến hôm nay"
 )
 
 st.dataframe(df_hours, use_container_width=True)
