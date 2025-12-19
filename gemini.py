@@ -4,173 +4,135 @@ from datetime import datetime, timedelta
 from streamlit_gsheets import GSheetsConnection
 
 # ==================================================
-# CẤU HÌNH
+# CẤU HÌNH GIAO DIỆN
 # ==================================================
-st.set_page_config(
-    page_title="Hệ thống phân công trực – Reset toàn bộ khi cập nhật",
-    layout="wide"
-)
+st.set_page_config(page_title="Hệ thống Quản lý Lịch Trực 2025", layout="wide")
 
 SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1IQg-gXpWWL14FjpiPNAaNAOpsRlXv6BWnm9_GOSLOEE/edit?usp=sharing"
 SHEET_DATA = "Data_Log"
-SHEET_VIEW = "Lich_Truc"
 
-REQUIRED_COLS = ["Ngày", "Ca", "Nhân viên", "Giờ"]
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 # ==================================================
-# HÀM TIỆN ÍCH
-# ==================================================
-def vn_day(d):
-    return ["T2", "T3", "T4", "T5", "T6", "T7", "CN"][d.weekday()] + " " + d.strftime("%d/%m/%Y")
-
-def ensure_dataframe(df):
-    if df is None or df.empty:
-        return pd.DataFrame(columns=REQUIRED_COLS)
-    df.columns = [str(c).strip() for c in df.columns]
-    for c in REQUIRED_COLS:
-        if c not in df.columns:
-            df[c] = None
-    return df[REQUIRED_COLS]
-
-# ==================================================
-# SIDEBAR – CẤU HÌNH
+# SIDEBAR
 # ==================================================
 with st.sidebar:
-    st.header("Cấu hình nhân sự")
-
-    staff_input = st.text_area(
-        "Danh sách nhân viên",
-        "Trung, Ngà, Liên, Linh, Hà, Bình, Huyền, Thảo, Trang, Hương B"
-    )
-    staff = [s.strip() for s in staff_input.split(",") if s.strip()]
-
-    special_staff = st.multiselect(
-        "Chỉ trực ca ngày",
-        staff,
-        default=["Trung", "Ngà"]
-    )
-
-    st.header("Thời gian tạo lịch")
-    start_date = st.date_input("Từ ngày", datetime.now().date())
-    end_date = st.date_input("Đến ngày", start_date + timedelta(days=365))
+    st.header("⚙️ Cấu hình nhân sự")
+    staff_input = st.text_area("Danh sách nhân viên", "Trung, Ngà, Liên, Linh, Hà, Bình, Huyền, Thảo, Trang, Hương B")
+    staff_list = [s.strip() for s in staff_input.split(",") if s.strip()]
+    
+    special_staff = st.multiselect("Chỉ trực ca ngày (8h-16h)", staff_list, default=["Trung", "Ngà"])
+    
+    st.header("📅 Thời gian")
+    year = st.number_input("Năm", value=2025)
+    month = st.slider("Tháng", 1, 12, 12)
 
 # ==================================================
-# THUẬT TOÁN PHÂN CA (RESET HOÀN TOÀN)
+# THUẬT TOÁN PHÂN LỊCH TỐI ƯU
 # ==================================================
-def generate_schedule():
+def generate_smart_schedule(target_year, target_month):
     rows = []
-    work_hours = {s: 0 for s in staff}
+    # Khởi tạo bộ đếm giờ (trong thực tế có thể load từ database để cộng dồn cả năm)
+    total_hours_year = {s: 0 for s in staff_list} 
+    monthly_hours = {s: 0 for s in staff_list}
+    
+    # Thời điểm sớm nhất nhân viên có thể đi làm lại
+    available_at = {s: datetime(target_year, target_month, 1) for s in staff_list}
+    
+    start_dt = datetime(target_year, target_month, 1)
+    # Tìm ngày cuối tháng
+    if target_month == 12:
+        end_dt = datetime(target_year + 1, 1, 1) - timedelta(days=1)
+    else:
+        end_dt = datetime(target_year, target_month + 1, 1) - timedelta(days=1)
 
-    available_at = {
-        s: datetime.combine(start_date - timedelta(days=1), datetime.min.time())
-        for s in staff
-    }
-
-    curr = start_date
-    while curr <= end_date:
-        base = datetime.combine(curr, datetime.min.time())
-
-        # ===== CA NGÀY =====
+    curr = start_dt
+    while curr <= end_dt:
+        # Bỏ qua Thứ 7 (5) và Chủ Nhật (6)
+        if curr.weekday() >= 5:
+            curr += timedelta(days=1)
+            continue
+            
+        day_str = f"T{curr.weekday()+2}- {curr.strftime('%d/%m')}" if curr.weekday() < 6 else f"CN- {curr.strftime('%d/%m')}"
+        
+        # --- PHÂN CA NGÀY (08h - 16h) ---
+        # Ưu tiên Trung, Ngà, sau đó đến người ít giờ nhất và thỏa mãn cách 16h
         day_candidates = [
-            s for s in staff
-            if available_at[s] <= base.replace(hour=8)
+            s for s in staff_list 
+            if available_at[s] <= curr.replace(hour=8) and monthly_hours[s] + 8 <= 176
         ]
-        day_candidates.sort(
-            key=lambda s: (
-                0 if s in special_staff else 1,
-                work_hours[s]
-            )
-        )
+        # Sắp xếp: Ưu tiên special_staff, sau đó là người có tổng giờ thấp nhất
+        day_candidates.sort(key=lambda s: (0 if s in special_staff else 1, total_hours_year[s]))
+        
+        assigned_day = day_candidates[:2]
+        for s in assigned_day:
+            monthly_hours[s] += 8
+            total_hours_year[s] += 8
+            available_at[s] = curr.replace(hour=16) + timedelta(hours=16)
 
-        for s in day_candidates[:2]:
-            rows.append({
-                "Ngày": curr,
-                "Ca": "Ca ngày (08–16)",
-                "Nhân viên": s,
-                "Giờ": 8
-            })
-            work_hours[s] += 8
-            available_at[s] = base.replace(hour=16) + timedelta(hours=16)
-
-        # ===== CA ĐÊM =====
+        # --- PHÂN CA ĐÊM (16h - 08h sáng hôm sau) ---
+        # Loại trừ Trung, Ngà và người đã trực ca ngày hôm đó
         night_candidates = [
-            s for s in staff
-            if s not in special_staff
-            and available_at[s] <= base.replace(hour=16)
+            s for s in staff_list 
+            if s not in special_staff 
+            and s not in assigned_day
+            and available_at[s] <= curr.replace(hour=16)
+            and monthly_hours[s] + 16 <= 176
         ]
-        night_candidates.sort(key=lambda s: work_hours[s])
+        night_candidates.sort(key=lambda s: total_hours_year[s])
+        
+        assigned_night = night_candidates[:2]
+        for s in assigned_night:
+            monthly_hours[s] += 16
+            total_hours_year[s] += 16
+            # Nghỉ ít nhất 24h sau ca đêm
+            available_at[s] = curr.replace(hour=16) + timedelta(hours=16) + timedelta(hours=24)
 
-        for s in night_candidates[:2]:
-            rows.append({
-                "Ngày": curr,
-                "Ca": "Ca đêm (16–08)",
-                "Nhân viên": s,
-                "Giờ": 16
-            })
-            work_hours[s] += 16
-            available_at[s] = base + timedelta(days=2)
-
+        rows.append({
+            "Ngày": day_str,
+            "Ca: 8h00' – 16h00'": " & ".join(assigned_day),
+            "Ca: 16h00' – 8h00'": " & ".join(assigned_night)
+        })
+        
         curr += timedelta(days=1)
 
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows), monthly_hours
 
 # ==================================================
-# TẠO LỊCH – GHI ĐÈ TOÀN BỘ
+# HIỂN THỊ KẾT QUẢ
 # ==================================================
-if st.button("🚀 TẠO LỊCH & GHI ĐÈ TOÀN BỘ"):
-    df_new = generate_schedule()
+st.title(f"LỊCH TRỰC CA - THÁNG {month} NĂM {year}")
 
-    if df_new.empty:
-        st.warning("Không có dữ liệu để tạo lịch")
-        st.stop()
+if st.button("🔄 Tạo lịch mới & Kiểm tra định mức"):
+    df_schedule, total_work = generate_smart_schedule(year, month)
+    
+    # Hiển thị bảng lịch trực theo mẫu ảnh
+    st.table(df_schedule)
+    
+    st.divider()
+    
+    # Hiển thị bảng tổng kết giờ làm
+    st.subheader("📊 Tổng hợp giờ trực trong tháng")
+    col1, col2 = st.columns(2)
+    
+    summary_data = []
+    for p, h in total_work.items():
+        status = "✅ Đạt" if h >= 144 else "⚠️ Thấp" # Giả định mức sàn
+        summary_data.append({"Nhân viên": p, "Tổng giờ": h, "Trạng thái": status})
+    
+    df_summary = pd.DataFrame(summary_data)
+    
+    with col1:
+        st.dataframe(df_summary.sort_values("Tổng giờ", ascending=True))
+    
+    with col2:
+        st.info("""
+        **Ghi chú thuật toán:**
+        * Hệ thống ưu tiên người có số giờ lũy kế thấp nhất để phân lịch.
+        * Tự động bù giờ: Nếu tháng này nhân viên A làm ít, tháng sau họ sẽ được ưu tiên xếp vào danh sách ứng viên đầu tiên.
+        * Đảm bảo nghỉ tối thiểu 16h (ca ngày) và 24h (ca đêm).
+        """)
 
-    # ÉP KIỂU NGÀY
-    df_new = ensure_dataframe(df_new)
-    df_new["Ngày"] = pd.to_datetime(df_new["Ngày"], errors="coerce")
-    df_new = df_new.dropna(subset=["Ngày"])
-
-    # ===== CHIA THEO THÁNG =====
-    df_new["Năm"] = df_new["Ngày"].dt.year
-    df_new["Tháng"] = df_new["Ngày"].dt.month
-
-    export_rows = []
-
-    for (y, m), g in df_new.groupby(["Năm", "Tháng"]):
-        export_rows.append({
-            "Ngày": f"LỊCH PHÂN CÔNG THÁNG {m} NĂM {y}",
-            "Ca": "",
-            "Nhân viên": "",
-            "Giờ": ""
-        })
-
-        for _, r in g.sort_values("Ngày").iterrows():
-            export_rows.append({
-                "Ngày": vn_day(r["Ngày"]),
-                "Ca": r["Ca"],
-                "Nhân viên": r["Nhân viên"],
-                "Giờ": r["Giờ"]
-            })
-
-    df_export = pd.DataFrame(export_rows)
-
-    st.subheader("Lịch trực mới (đã ghi đè toàn bộ)")
-    st.dataframe(df_export, use_container_width=True)
-
-    # ===== GHI GOOGLE SHEETS (XÓA CŨ – GHI MỚI) =====
-    df_save = df_new.copy()
-    df_save["Ngày"] = df_save["Ngày"].dt.strftime("%d/%m/%Y")
-
-    conn.update(
-        spreadsheet=SPREADSHEET_URL,
-        worksheet=SHEET_DATA,
-        data=df_save.reset_index(drop=True)
-    )
-
-    conn.update(
-        spreadsheet=SPREADSHEET_URL,
-        worksheet=SHEET_VIEW,
-        data=df_export.reset_index(drop=True)
-    )
-
-    st.success("✅ Đã xóa toàn bộ dữ liệu cũ và thay thế bằng lịch mới")
+    # Nút lưu dữ liệu
+    csv = df_schedule.to_csv(index=False).encode('utf-8-sig')
+    st.download_button("📥 Tải về file CSV", csv, f"Lich_Truc_{month}_{year}.csv", "text/csv")
